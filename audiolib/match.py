@@ -93,3 +93,51 @@ def candidate_pairs(postings: dict) -> set[tuple[int, int]]:
             for b in ids[i + 1:]:
                 pairs.add((a, b))
     return pairs
+
+
+def offset_histogram(fp_a: np.ndarray, fp_b: np.ndarray,
+                     align_bits: int) -> tuple[np.ndarray, int]:
+    """Histogram of position deltas over keys the two fingerprints share.
+
+    Bin index is `pos_a - pos_b + len(fp_b)`, so the shift to subtract to get
+    a signed offset is `len(fp_b)`.
+    """
+    n_a, n_b = len(fp_a), len(fp_b)
+    hist = np.zeros(n_a + n_b + 1, dtype=np.int64)
+    if n_a == 0 or n_b == 0:
+        return hist, n_b
+
+    keys_a = candidate_key(fp_a, align_bits)
+    keys_b = candidate_key(fp_b, align_bits)
+
+    by_key_b: dict[int, list[int]] = defaultdict(list)
+    for pos, key in enumerate(keys_b.tolist()):
+        by_key_b[key].append(pos)
+
+    for pos_a, key in enumerate(keys_a.tolist()):
+        for pos_b in by_key_b.get(key, ()):
+            hist[pos_a - pos_b + n_b] += 1
+    return hist, n_b
+
+
+def best_alignment(hist: np.ndarray, shift: int) -> tuple[int, int, int]:
+    """Highest local-maximum bin with more than one vote.
+
+    Ties are resolved by the lowest index, scanning low to high, so the result
+    does not depend on iteration order or on any random jitter.
+    """
+    total = int(hist.sum())
+    best_index = -1
+    best_count = 0
+    for i in range(len(hist)):
+        count = int(hist[i])
+        if count <= 1:
+            continue
+        left_ok = hist[i - 1] <= count if i > 0 else True
+        right_ok = hist[i + 1] <= count if i < len(hist) - 1 else True
+        if left_ok and right_ok and count > best_count:
+            best_count = count
+            best_index = i
+    if best_index < 0:
+        return 0, 0, 0
+    return best_index - shift, best_count, total
