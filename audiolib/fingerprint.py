@@ -45,18 +45,55 @@ def config_hash(config: dict) -> str:
     return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
 
+# A short frequency-swept, amplitude-modulated reference tone, matching the
+# design in tests/fixtures.make_tone (duplicated rather than imported: this
+# is production code and must not depend on the test suite).
+_REFERENCE_TONE_EXPR = (
+    "sin(2*PI*t*(440+220*sin(2*PI*t/7)))*(0.4+0.3*sin(2*PI*t*1.7))"
+)
+_REFERENCE_TONE_SECONDS = 120
+
+
 @lru_cache(maxsize=1)
 def item_duration_seconds() -> float:
-    """Seconds of audio per fingerprint item, from the library itself."""
-    import chromaprint  # provided by pyacoustid
+    """Seconds of audio per fingerprint item, measured empirically.
 
-    ctx = chromaprint._libchromaprint.chromaprint_new(DEFAULT_CONFIG["algorithm"])
-    try:
-        item = chromaprint._libchromaprint.chromaprint_get_item_duration(ctx)
-        rate = chromaprint._libchromaprint.chromaprint_get_sample_rate(ctx)
-        return item / rate
-    finally:
-        chromaprint._libchromaprint.chromaprint_free(ctx)
+    `chromaprint_get_item_duration() / chromaprint_get_sample_rate()` does
+    NOT give the right answer on this build: it returns 4096 / 11025 =
+    0.3715s/item, but a real fpcalc run's actual item count against a known
+    duration measures ~0.126s/item -- about 3x smaller -- and there is no
+    documented way to reconcile those two getters against the true value
+    from the public API alone. A constant tone is not a safe substitute
+    either: it was independently measured at ~0.136s/item, about 8% off,
+    matching the warning already noted in tests/fixtures.make_tone that a
+    constant tone fingerprints degenerately.
+
+    The rate itself is not a fixed constant: measured on the swept
+    reference tone it runs high on short clips and converges as length
+    grows (30s -> 0.1358, 60s -> 0.1296, 120s -> 0.1266, 240s -> 0.1252),
+    which looks like a roughly constant per-file item count diluted by
+    length rather than a true per-item cost. 120 seconds -- matching this
+    module's own AcoustID lookup window -- is used as the reference length:
+    close enough to the long-run asymptote (~2%) to be far better than the
+    original ~3x error, and representative of real track lengths, without
+    paying for a multi-minute reference fingerprint on every process start.
+    """
+    import subprocess
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ref = Path(tmp) / "ref.flac"
+        subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+             "-f", "lavfi",
+             "-i", f"aevalsrc={_REFERENCE_TONE_EXPR}:s=44100:d="
+                   f"{_REFERENCE_TONE_SECONDS}",
+             "-ac", "1", "-c:a", "flac", str(ref)],
+            check=True,
+        )
+        result = fingerprint_file(ref, DEFAULT_CONFIG)
+    return result.duration / len(result.raw)
 
 
 def _parse(stdout: str) -> tuple[np.ndarray, float]:
