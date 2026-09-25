@@ -16,6 +16,7 @@ not reproduced: reports must be reproducible. Ties break by index order.
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -141,3 +142,101 @@ def best_alignment(hist: np.ndarray, shift: int) -> tuple[int, int, int]:
     if best_index < 0:
         return 0, 0, 0
     return best_index - shift, best_count, total
+
+
+_POPCOUNT = np.array(
+    [bin(i).count("1") for i in range(256)], dtype=np.uint8
+)
+
+
+@dataclass(frozen=True)
+class Segment:
+    pos_a: int
+    pos_b: int
+    length: int
+    score: float
+
+
+def hamming_series(fp_a: np.ndarray, fp_b: np.ndarray,
+                   offset: int) -> np.ndarray:
+    """Per-item differing-bit counts over the region the offset overlaps.
+
+    `offset` is `pos_a - pos_b`: item `i` of the overlap is `fp_a[start_a + i]`
+    against `fp_b[start_b + i]`.
+    """
+    start_a = offset if offset > 0 else 0
+    start_b = -offset if offset < 0 else 0
+    size = min(len(fp_a) - start_a, len(fp_b) - start_b)
+    if size <= 0:
+        return np.zeros(0, dtype=np.int32)
+    xor = (fp_a[start_a:start_a + size] ^ fp_b[start_b:start_b + size])
+    as_bytes = np.ascontiguousarray(xor, dtype="<u4").view(np.uint8)
+    return _POPCOUNT[as_bytes].reshape(-1, 4).sum(axis=1).astype(np.int32)
+
+
+def gaussian_smooth(series: np.ndarray, sigma: float) -> np.ndarray:
+    """Truncated Gaussian convolution.
+
+    Upstream approximates the Gaussian with three box-filter passes. A direct
+    kernel is used here: the difference is immaterial at sigma 8, and every
+    threshold downstream is calibrated rather than inherited verbatim.
+    """
+    if len(series) == 0:
+        return series.astype(float)
+    radius = max(1, int(round(4 * sigma)))
+    x = np.arange(-radius, radius + 1, dtype=float)
+    kernel = np.exp(-(x ** 2) / (2 * sigma ** 2))
+    kernel /= kernel.sum()
+    padded = np.pad(series.astype(float), radius, mode="edge")
+    return np.convolve(padded, kernel, mode="valid")
+
+
+def segments(fp_a: np.ndarray, fp_b: np.ndarray, offset: int,
+             config: dict) -> list[Segment]:
+    """Cut the overlap into segments and keep the ones that match.
+
+    No random jitter is added to the bit counts. Gradient-peak ties resolve by
+    index order, so repeated runs return identical segments.
+    """
+    raw = hamming_series(fp_a, fp_b, offset)
+    size = len(raw)
+    if size == 0:
+        return []
+
+    start_a = offset if offset > 0 else 0
+    start_b = -offset if offset < 0 else 0
+
+    smoothed = gaussian_smooth(raw, config["sigma"])
+    gradient = np.abs(np.gradient(smoothed))
+
+    boundaries: list[int] = []
+    threshold = config["gradient_peak"]
+    for i in range(1, size - 1):
+        g = gradient[i]
+        if g > threshold and g >= gradient[i - 1] and g >= gradient[i + 1]:
+            if not boundaries or boundaries[-1] + 1 < i:
+                boundaries.append(i)
+    boundaries.append(size)
+
+    kept: list[Segment] = []
+    begin = 0
+    for end in boundaries:
+        length = end - begin
+        if length <= 0:
+            continue
+        score = float(raw[begin:end].mean())
+        if score < config["match_threshold"]:
+            if kept and abs(kept[-1].score - score) < config["merge_delta"] \
+                    and kept[-1].pos_a + kept[-1].length == start_a + begin:
+                prev = kept.pop()
+                total = prev.length + length
+                merged_score = (
+                    prev.score * prev.length + score * length
+                ) / total
+                kept.append(Segment(prev.pos_a, prev.pos_b, total, merged_score))
+            else:
+                kept.append(
+                    Segment(start_a + begin, start_b + begin, length, score)
+                )
+        begin = end
+    return kept
