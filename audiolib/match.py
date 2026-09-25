@@ -240,3 +240,72 @@ def segments(fp_a: np.ndarray, fp_b: np.ndarray, offset: int,
                 )
         begin = end
     return kept
+
+
+@dataclass(frozen=True)
+class PairEvidence:
+    best_offset: int
+    peak_votes: int
+    peak_vote_ratio: float
+    matched_span_items: int
+    matched_span_seconds: float
+    coverage_a: float
+    coverage_b: float
+    mean_bit_error: float
+    segment_count: int
+    tier: int
+
+
+TIER_NONE = 0
+
+
+def classify(fields: dict, config: dict) -> int:
+    """Tier from evidence. Tier 0 is assigned by identity, never here."""
+    if fields["matched_span_items"] == 0:
+        return TIER_NONE
+    if fields["peak_vote_ratio"] < config["min_peak_vote_ratio"]:
+        return TIER_NONE
+
+    cov_min = min(fields["coverage_a"], fields["coverage_b"])
+    cov_max = max(fields["coverage_a"], fields["coverage_b"])
+    seconds = fields["matched_span_seconds"]
+
+    if (cov_min >= config["tier1_min_coverage"]
+            and fields["mean_bit_error"] <= config["tier1_max_bit_error"]
+            and seconds >= config["tier1_min_overlap_seconds"]):
+        return 1
+
+    if cov_max >= config["tier1_min_coverage"] \
+            and seconds >= config["tier2_min_overlap_seconds"]:
+        return 2
+    if cov_min > 0.0 and seconds >= config["tier2_min_overlap_seconds"]:
+        return 2
+    return TIER_NONE
+
+
+def compare(fp_a: np.ndarray, fp_b: np.ndarray, config: dict,
+            item_seconds: float) -> PairEvidence:
+    n_a, n_b = len(fp_a), len(fp_b)
+    hist, shift = offset_histogram(fp_a, fp_b, config["align_bits"])
+    offset, peak_votes, total_votes = best_alignment(hist, shift)
+
+    segs = segments(fp_a, fp_b, offset, config) if peak_votes else []
+    span = sum(s.length for s in segs)
+    if span:
+        mean_bit_error = sum(s.score * s.length for s in segs) / span
+    else:
+        mean_bit_error = 0.0
+
+    fields = {
+        "best_offset": offset,
+        "peak_votes": peak_votes,
+        "peak_vote_ratio": (peak_votes / total_votes) if total_votes else 0.0,
+        "matched_span_items": span,
+        "matched_span_seconds": span * item_seconds,
+        "coverage_a": (span / n_a) if n_a else 0.0,
+        "coverage_b": (span / n_b) if n_b else 0.0,
+        "mean_bit_error": mean_bit_error,
+        "segment_count": len(segs),
+    }
+    fields["tier"] = classify(fields, config)
+    return PairEvidence(**fields)
