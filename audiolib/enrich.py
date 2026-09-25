@@ -10,6 +10,7 @@ import hashlib
 import json
 import time
 from datetime import datetime, timezone
+from functools import lru_cache
 
 import numpy as np
 
@@ -18,6 +19,7 @@ from audiolib import fingerprint, store
 ACOUSTID_RATE = 3.0  # requests per second, per the service's guidelines
 META = "recordings+releasegroups+compress"
 LOOKUP_SECONDS = 120.0  # fpcalc's default, which populated the index
+_COMPAT_REFERENCE_SECONDS = 150  # comfortably past the 120s lookup window
 
 
 class RateLimiter:
@@ -55,16 +57,81 @@ def lookup_key(algorithm: int, encoded_fp: str, duration: float,
     return hashlib.sha256(blob.encode()).hexdigest()
 
 
+@lru_cache(maxsize=1)
+def _prefix_slicing_is_valid() -> bool:
+    """Whether slicing the canonical array and re-encoding matches a real
+    `fpcalc -length 120` run, checked once per process.
+
+    Chromaprint fingerprints are not *guaranteed* prefix-compatible by any
+    documented property of the public API, so this is verified rather than
+    assumed. It empirically holds on this build (algorithm 2, fpcalc 1.5.1):
+    an earlier apparent failure here was actually a bug in
+    `item_duration_seconds()` computing the wrong slice length, not genuine
+    prefix instability -- see the Task 18 ledger entry.
+    """
+    import subprocess
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ref = Path(tmp) / "ref.flac"
+        subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+             "-f", "lavfi",
+             "-i", f"aevalsrc={fingerprint._REFERENCE_TONE_EXPR}:s=44100:"
+                   f"d={_COMPAT_REFERENCE_SECONDS}",
+             "-ac", "1", "-c:a", "flac", str(ref)],
+            check=True,
+        )
+        full = fingerprint.fingerprint_file(ref).raw
+        item_seconds = fingerprint.item_duration_seconds()
+        n = min(len(full), int(round(LOOKUP_SECONDS / item_seconds)))
+        native = fingerprint.fingerprint_file(
+            ref, dict(fingerprint.DEFAULT_CONFIG, length=LOOKUP_SECONDS)).raw
+
+    return encode(full[:n], 2) == encode(native, 2)
+
+
+def _create_dedicated_artifact(conn, content_id: int) -> tuple[str, int]:
+    """Fallback: a real fpcalc run at length=120, stored and reused.
+
+    Only reached when `_prefix_slicing_is_valid()` is false. The canonical
+    full-track artifact is never touched.
+    """
+    from pathlib import Path
+
+    track = conn.execute(
+        "SELECT path FROM track WHERE audio_content_id = ? AND present = 1 "
+        "LIMIT 1", (content_id,)).fetchone()
+    if track is None:
+        raise LookupError(f"no present track for content {content_id}")
+
+    version = fingerprint.fpcalc_version()
+    lookup_config = dict(fingerprint.DEFAULT_CONFIG, length=LOOKUP_SECONDS)
+    chash = fingerprint.config_hash(lookup_config)
+    result = fingerprint.fingerprint_file(Path(track["path"]), lookup_config)
+
+    conn.execute(
+        "INSERT INTO fingerprint (audio_content_id, analyzer, "
+        " analyzer_version, config_hash, purpose, algorithm, fp_raw, "
+        " fp_length, computed_at) "
+        "VALUES (?, ?, ?, ?, 'acoustid_lookup', ?, ?, ?, ?)",
+        (content_id, fingerprint.ANALYZER, version, chash, result.algorithm,
+         store.pack_fingerprint(result.raw), len(result.raw),
+         datetime.now(timezone.utc).isoformat()),
+    )
+    return encode(result.raw, result.algorithm), len(result.raw)
+
+
 def lookup_fingerprint(conn, content_id: int, config: dict) -> tuple[str, int]:
     """The base64 fingerprint to send to AcoustID, and its item count.
 
-    Chromaprint fingerprints are not guaranteed prefix-compatible -- slicing
-    the canonical array and re-encoding was found NOT to match a plain
-    default `fpcalc -length 120` run on this build (verified in
-    test_prefix_compatibility_check / test_lookup_fingerprint_falls_back_to
-    _a_dedicated_artifact). So a dedicated `purpose = 'acoustid_lookup'`
-    fingerprint is created once per content, from a real fpcalc run, and
-    reused after that. The canonical full-track artifact is never touched.
+    Preferred: slice the canonical array already in the database and
+    re-encode -- no file access, no new row. Used whenever the canonical is
+    already within the lookup window, or slicing is verified compatible.
+    Fallback (only if `_prefix_slicing_is_valid()` is false): a dedicated
+    `purpose = 'acoustid_lookup'` fingerprint from a real fpcalc run,
+    created once per content and reused after that.
     """
     lookup_row = conn.execute(
         "SELECT fp_raw, fp_length, algorithm FROM fingerprint "
@@ -89,34 +156,17 @@ def lookup_fingerprint(conn, content_id: int, config: dict) -> tuple[str, int]:
             int(round(LOOKUP_SECONDS / item_seconds)))
 
     # A fingerprint short enough to already be within the lookup window needs
-    # no fpcalc re-run: the canonical array itself, taken whole, is exactly
-    # what a default-length fpcalc run over the same short audio would give.
+    # no slicing decision at all: the canonical array itself, taken whole, is
+    # exactly what a default-length fpcalc run over the same short audio
+    # would give, regardless of prefix-compatibility.
     if len(canonical_raw) <= n:
         return encode(canonical_raw, canonical["algorithm"]), len(canonical_raw)
 
-    track = conn.execute(
-        "SELECT path FROM track WHERE audio_content_id = ? AND present = 1 "
-        "LIMIT 1", (content_id,)).fetchone()
-    if track is None:
-        raise LookupError(f"no present track for content {content_id}")
+    if _prefix_slicing_is_valid():
+        sliced = canonical_raw[:n]
+        return encode(sliced, canonical["algorithm"]), len(sliced)
 
-    from pathlib import Path
-
-    version = fingerprint.fpcalc_version()
-    lookup_config = dict(fingerprint.DEFAULT_CONFIG, length=LOOKUP_SECONDS)
-    chash = fingerprint.config_hash(lookup_config)
-    result = fingerprint.fingerprint_file(Path(track["path"]), lookup_config)
-
-    conn.execute(
-        "INSERT INTO fingerprint (audio_content_id, analyzer, "
-        " analyzer_version, config_hash, purpose, algorithm, fp_raw, "
-        " fp_length, computed_at) "
-        "VALUES (?, ?, ?, ?, 'acoustid_lookup', ?, ?, ?, ?)",
-        (content_id, fingerprint.ANALYZER, version, chash, result.algorithm,
-         store.pack_fingerprint(result.raw), len(result.raw),
-         datetime.now(timezone.utc).isoformat()),
-    )
-    return encode(result.raw, result.algorithm), len(result.raw)
+    return _create_dedicated_artifact(conn, content_id)
 
 
 def _default_client(apikey, fp, duration, meta):

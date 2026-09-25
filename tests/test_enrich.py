@@ -59,13 +59,14 @@ def test_lookup_key_covers_the_whole_request():
 
 def test_lookup_fingerprint_truncates_to_120_seconds(tmp_path):
     conn = store.connect(tmp_path / "db.sqlite")
-    # The backing file must itself run well past 120s, or the real fpcalc
-    # fallback (needed because slicing isn't prefix-compatible -- see
-    # test_prefix_compatibility_check) has nothing to truncate.
-    _content_with_fp(conn, tmp_path, n_items=2000, file_seconds=150.0)
+    # The fast path slices the in-memory canonical array directly and never
+    # touches the backing file, so the fixture's cheap default duration is
+    # enough here -- only the (monkeypatched) fallback test needs a real
+    # long file to actually fingerprint.
+    _content_with_fp(conn, tmp_path, n_items=2000)
     encoded, n = enrich.lookup_fingerprint(conn, 1, fingerprint.DEFAULT_CONFIG)
     expected = int(round(120.0 / fingerprint.item_duration_seconds()))
-    assert abs(n - expected) <= 10
+    assert abs(n - expected) <= 2
     assert isinstance(encoded, str) and encoded
 
 
@@ -137,13 +138,49 @@ def test_prefix_compatibility_check(tmp_path):
         )
 
 
-def test_lookup_fingerprint_falls_back_to_a_dedicated_artifact(tmp_path):
-    # Confirmed on this build: slicing the canonical array and re-encoding is
-    # NOT prefix-compatible with a plain `fpcalc -length 120` run (see
-    # test_prefix_compatibility_check, which skips here). lookup_fingerprint
-    # must therefore create and reuse a dedicated purpose='acoustid_lookup'
-    # artifact rather than trust the derived slice, without ever touching the
-    # canonical full-track fingerprint.
+def test_lookup_fingerprint_prefers_the_fast_derived_slice_when_valid(tmp_path):
+    # Verified compatible on this build (test_prefix_compatibility_check
+    # passes). The fast path -- slice the in-memory canonical array and
+    # re-encode -- must be preferred whenever it is valid: no file access,
+    # no dedicated artifact row.
+    from audiolib import scan
+    from tests.fixtures import make_tone
+
+    lib = tmp_path / "lib"
+    p = make_tone(lib / "a.flac", seconds=200.0)
+    conn = store.connect(tmp_path / "db.sqlite")
+    scan.scan(conn, [lib])
+    fingerprint.fingerprint_pending(conn)
+
+    content_id = conn.execute(
+        "SELECT audio_content_id FROM track LIMIT 1").fetchone()[0]
+
+    native = enrich.encode(
+        fingerprint.fingerprint_file(
+            p, dict(fingerprint.DEFAULT_CONFIG, length=120)).raw,
+        2,
+    )
+
+    encoded, _ = enrich.lookup_fingerprint(conn, content_id,
+                                           fingerprint.DEFAULT_CONFIG)
+    assert encoded == native
+
+    lookup_rows = conn.execute(
+        "SELECT count(*) c FROM fingerprint WHERE purpose = 'acoustid_lookup'"
+    ).fetchone()["c"]
+    assert lookup_rows == 0
+
+
+def test_lookup_fingerprint_falls_back_to_a_dedicated_artifact(monkeypatch,
+                                                                tmp_path):
+    # The spec's own design is preferred-fast-path, fallback-if-invalid. This
+    # build's fast path is valid (see the test above), so the fallback branch
+    # is forced here rather than relied on to occur naturally, to verify it
+    # still produces a correct result and never touches the canonical
+    # full-track artifact when it does trigger -- on a build, version, or
+    # algorithm where slicing is genuinely not prefix-compatible.
+    monkeypatch.setattr(enrich, "_prefix_slicing_is_valid", lambda: False)
+
     from audiolib import scan
     from tests.fixtures import make_tone
 
