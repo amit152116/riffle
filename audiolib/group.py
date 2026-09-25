@@ -56,6 +56,11 @@ def build_groups(conn, run_id: int, config: dict = match.DEFAULT_MATCH_CONFIG,
     """
     now = datetime.now(timezone.utc).isoformat()
 
+    # The real verifier's full PairEvidence, keyed by (a, b), when available.
+    # A test-injected verifier returns tier alone and never populates this,
+    # so those rows keep the tier-only shape the tests construct.
+    full_evidence: dict[tuple[int, int], object] = {}
+
     if verifier is None:
         fps = matchrun.load_fingerprints(conn)
         item_seconds = fingerprint.item_duration_seconds()
@@ -63,7 +68,9 @@ def build_groups(conn, run_id: int, config: dict = match.DEFAULT_MATCH_CONFIG,
         def verifier(a, b):  # noqa: F811 - deliberate local default
             if a not in fps or b not in fps:
                 return match.TIER_NONE
-            return match.compare(fps[a], fps[b], config, item_seconds).tier
+            ev = match.compare(fps[a], fps[b], config, item_seconds)
+            full_evidence[(a, b)] = ev
+            return ev.tier
 
     edges = {
         (r["a_content_id"], r["b_content_id"])
@@ -79,13 +86,42 @@ def build_groups(conn, run_id: int, config: dict = match.DEFAULT_MATCH_CONFIG,
         for a, b in combinations(members, 2):
             tier = verifier(a, b)
             verified[(a, b)] = tier
-            conn.execute(
-                "INSERT INTO pair (run_id, a_content_id, b_content_id, tier, "
-                " verified_direct) VALUES (?,?,?,?,1) "
-                "ON CONFLICT(run_id, a_content_id, b_content_id) "
-                "DO UPDATE SET tier = excluded.tier, verified_direct = 1",
-                (run_id, a, b, tier),
-            )
+            ev = full_evidence.get((a, b))
+            if ev is not None:
+                # Direct verification with real evidence: store the full
+                # picture, not just the tier -- this is the pair a chain
+                # group exists to let a person inspect.
+                conn.execute(
+                    "INSERT INTO pair (run_id, a_content_id, b_content_id, "
+                    " best_offset, peak_votes, peak_vote_ratio, "
+                    " matched_span_items, matched_span_seconds, coverage_a, "
+                    " coverage_b, mean_bit_error, segment_count, tier, "
+                    " verified_direct) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,1) "
+                    "ON CONFLICT(run_id, a_content_id, b_content_id) "
+                    "DO UPDATE SET "
+                    "best_offset=excluded.best_offset, "
+                    "peak_votes=excluded.peak_votes, "
+                    "peak_vote_ratio=excluded.peak_vote_ratio, "
+                    "matched_span_items=excluded.matched_span_items, "
+                    "matched_span_seconds=excluded.matched_span_seconds, "
+                    "coverage_a=excluded.coverage_a, "
+                    "coverage_b=excluded.coverage_b, "
+                    "mean_bit_error=excluded.mean_bit_error, "
+                    "segment_count=excluded.segment_count, "
+                    "tier=excluded.tier, verified_direct=1",
+                    (run_id, a, b, ev.best_offset, ev.peak_votes,
+                     ev.peak_vote_ratio, ev.matched_span_items,
+                     ev.matched_span_seconds, ev.coverage_a, ev.coverage_b,
+                     ev.mean_bit_error, ev.segment_count, ev.tier),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO pair (run_id, a_content_id, b_content_id, "
+                    " tier, verified_direct) VALUES (?,?,?,?,1) "
+                    "ON CONFLICT(run_id, a_content_id, b_content_id) "
+                    "DO UPDATE SET tier = excluded.tier, verified_direct = 1",
+                    (run_id, a, b, tier),
+                )
 
         is_clique = all(t == 1 for t in verified.values())
         tier = 1 if is_clique else 2

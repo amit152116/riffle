@@ -11,13 +11,27 @@ def _setup(tmp_path, tier=1, formed_by_chain=0):
     return conn
 
 
-def _add(conn, tid, path, bitrate, completeness, mtime, dev=1, inode=None):
+def _add(conn, tid, path, bitrate, completeness, mtime, dev=1, inode=None,
+        duration=None):
+    # A distinct audio_content row per call, only when duration matters to
+    # the test: real tier-1 members can have different encodings/lengths,
+    # each with their own audio_content.duration, unlike the single shared
+    # content row every other test in this file uses.
+    if duration is not None:
+        content_id = tid + 1000  # _setup already created audio_content id=1
+        conn.execute(
+            "INSERT INTO audio_content (id, audio_hash, hash_method, "
+            " duration) VALUES (?,?, 'streamhash', ?)",
+            (content_id, f"h{tid}", duration))
+    else:
+        content_id = 1
     conn.execute(
         "INSERT INTO track (id, path, bitrate, tag_completeness, mtime, "
-        " dev, inode, audio_content_id, present) VALUES (?,?,?,?,?,?,?,1,1)",
-        (tid, path, bitrate, completeness, mtime, dev, inode or tid))
+        " dev, inode, audio_content_id, present) VALUES (?,?,?,?,?,?,?,?,1)",
+        (tid, path, bitrate, completeness, mtime, dev, inode or tid,
+         content_id))
     conn.execute("INSERT INTO group_member (group_id, track_id, "
-                 " audio_content_id) VALUES (1,?,1)", (tid,))
+                 " audio_content_id) VALUES (1,?,?)", (tid, content_id))
 
 
 def test_lossless_wins_over_higher_bitrate_lossy(tmp_path):
@@ -82,3 +96,26 @@ def test_ranking_is_reproducible_under_full_ties(tmp_path):
     _add(conn, 1, "/m/zzz.mp3", 320000, 4, 100.0)
     _add(conn, 2, "/m/aaa.mp3", 320000, 4, 100.0)
     assert rank.rank_group(conn, 1) == 2  # path sort breaks the tie
+
+
+def test_longest_duration_wins_before_mtime(tmp_path):
+    # Review finding I11: the spec's order is lossless > bitrate > tags >
+    # longest duration > oldest mtime, but duration was missing entirely,
+    # so a full-length track tied on lossless/bitrate/tags could lose to a
+    # trimmed copy purely because of mtime -- the opposite of what a
+    # reasonable person keeping their music would want.
+    conn = _setup(tmp_path)
+    _add(conn, 1, "/m/full.flac", 900000, 4, 500.0, duration=240.0)
+    _add(conn, 2, "/m/trimmed.flac", 900000, 4, 100.0, duration=180.0)
+    assert rank.rank_group(conn, 1) == 1
+
+
+def test_null_mtime_does_not_outrank_a_real_mtime(tmp_path):
+    # Related to I11: None was mapped to 0.0, which is *greater* than every
+    # negative -mtime for a real, positive Unix timestamp, so a track with
+    # no recorded mtime would always incorrectly win that tie-break level
+    # over one with a real, older mtime.
+    conn = _setup(tmp_path)
+    _add(conn, 1, "/m/a.mp3", 320000, 4, mtime=None)
+    _add(conn, 2, "/m/b.mp3", 320000, 4, mtime=50.0)
+    assert rank.rank_group(conn, 1) == 2

@@ -47,53 +47,83 @@ def config_hash(config: dict) -> str:
 
 # A short frequency-swept, amplitude-modulated reference tone, matching the
 # design in tests/fixtures.make_tone (duplicated rather than imported: this
-# is production code and must not depend on the test suite).
+# is production code and must not depend on the test suite). Used only for
+# enrich.py's prefix-compatibility check, a different concern from item
+# duration below.
 _REFERENCE_TONE_EXPR = (
     "sin(2*PI*t*(440+220*sin(2*PI*t/7)))*(0.4+0.3*sin(2*PI*t*1.7))"
 )
 _REFERENCE_TONE_SECONDS = 120
 
 
+def internal_algorithm(cli_algorithm: int) -> int:
+    """The chromaprint library's internal algorithm enum for the number
+    fpcalc's `-algorithm` CLI flag was invoked with.
+
+    These are off by one, verified directly against a real fpcalc round
+    trip: `fpcalc -algorithm 2`'s own native encoded output, when decoded,
+    reports algorithm=1 -- not 2. `chromaprint_new(1)` (not `chromaprint_new
+    (2)`) is what the CLI's "2" actually means to the C API's encode,
+    decode, and item-duration calls, and passing the CLI number directly to
+    any of those (as this project's code originally did) produces a
+    mismatched fingerprint header and, for item duration specifically, a
+    value roughly 3x too large (see item_duration_seconds below).
+    """
+    return cli_algorithm - 1
+
+
 @lru_cache(maxsize=1)
 def item_duration_seconds() -> float:
-    """Seconds of audio per fingerprint item, measured empirically.
+    """Seconds of audio per fingerprint item, from the library itself.
 
-    `chromaprint_get_item_duration() / chromaprint_get_sample_rate()` does
-    NOT give the right answer on this build: it returns 4096 / 11025 =
-    0.3715s/item, but a real fpcalc run's actual item count against a known
-    duration measures ~0.126s/item -- about 3x smaller -- and there is no
-    documented way to reconcile those two getters against the true value
-    from the public API alone. A constant tone is not a safe substitute
-    either: it was independently measured at ~0.136s/item, about 8% off,
-    matching the warning already noted in tests/fixtures.make_tone that a
-    constant tone fingerprints degenerately.
-
-    The rate itself is not a fixed constant: measured on the swept
-    reference tone it runs high on short clips and converges as length
-    grows (30s -> 0.1358, 60s -> 0.1296, 120s -> 0.1266, 240s -> 0.1252),
-    which looks like a roughly constant per-file item count diluted by
-    length rather than a true per-item cost. 120 seconds -- matching this
-    module's own AcoustID lookup window -- is used as the reference length:
-    close enough to the long-run asymptote (~2%) to be far better than the
-    original ~3x error, and representative of real track lengths, without
-    paying for a multi-minute reference fingerprint on every process start.
+    Queries `chromaprint_new()` with the *internal* algorithm enum
+    (`internal_algorithm(DEFAULT_CONFIG["algorithm"])`), not the fpcalc CLI
+    number directly. Passing the CLI number (2) gives item_duration=4096,
+    sample_rate=11025 -> 0.3715s/item, roughly 3x the true value; the
+    correct enum (1) gives item_duration=1365 -> 0.12381s/item, matching
+    the spec's own "about 0.124" and Task 10's hardcoded ITEM=0.1238 test
+    constant exactly. An earlier version of this function assumed the
+    discrepancy was unexplainable from the documented API and worked around
+    it by fingerprinting a real reference tone empirically; that masked the
+    true, simpler cause (see the Task 20 review's finding I4) and only
+    approximated the correct value to within a couple of percent.
     """
-    import subprocess
-    import tempfile
-    from pathlib import Path
+    import chromaprint  # provided by pyacoustid
 
-    with tempfile.TemporaryDirectory() as tmp:
-        ref = Path(tmp) / "ref.flac"
-        subprocess.run(
-            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-             "-f", "lavfi",
-             "-i", f"aevalsrc={_REFERENCE_TONE_EXPR}:s=44100:d="
-                   f"{_REFERENCE_TONE_SECONDS}",
-             "-ac", "1", "-c:a", "flac", str(ref)],
-            check=True,
-        )
-        result = fingerprint_file(ref, DEFAULT_CONFIG)
-    return result.duration / len(result.raw)
+    algorithm = internal_algorithm(DEFAULT_CONFIG["algorithm"])
+    ctx = chromaprint._libchromaprint.chromaprint_new(algorithm)
+    try:
+        item = chromaprint._libchromaprint.chromaprint_get_item_duration(ctx)
+        rate = chromaprint._libchromaprint.chromaprint_get_sample_rate(ctx)
+        return item / rate
+    finally:
+        chromaprint._libchromaprint.chromaprint_free(ctx)
+
+
+def lookup_window_items(seconds: float) -> int:
+    """How many fingerprint items a real `fpcalc -length <seconds>` run
+    produces, matching Chromaprint's own delay-aware accounting.
+
+    A naive `seconds / item_duration_seconds()` overcounts: Chromaprint
+    reserves a fixed per-file delay (`chromaprint_get_delay()`, ~2.6s at
+    the internal 11025 Hz working rate) before its first item, so the
+    items actually available within the first `seconds` of decoded audio
+    are `(seconds * sample_rate - delay) / item_duration`, not the naive
+    division. Verified directly: for a 120s window this gives 948 items,
+    matching a real `fpcalc -length 120` run exactly; the naive formula
+    gives 969, which does not -- see the Task 20 review's finding I4.
+    """
+    import chromaprint
+
+    algorithm = internal_algorithm(DEFAULT_CONFIG["algorithm"])
+    ctx = chromaprint._libchromaprint.chromaprint_new(algorithm)
+    try:
+        item = chromaprint._libchromaprint.chromaprint_get_item_duration(ctx)
+        rate = chromaprint._libchromaprint.chromaprint_get_sample_rate(ctx)
+        delay = chromaprint._libchromaprint.chromaprint_get_delay(ctx)
+    finally:
+        chromaprint._libchromaprint.chromaprint_free(ctx)
+    return max(0, int((seconds * rate - delay) / item))
 
 
 def _parse(stdout: str) -> tuple[np.ndarray, float]:

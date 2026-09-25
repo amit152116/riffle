@@ -268,7 +268,14 @@ class PairEvidence:
     tier: int
 
 
-TIER_NONE = 0
+TIER_NONE = -1
+"""Sentinel for "no match found by compare()". NOT the same concept as tier
+0 ("identical encoded audio stream", which is assigned by content identity,
+never by compare() -- compare() structurally cannot return that value: a
+byte-identical pair naturally satisfies tier 1's own thresholds instead.
+TIER_NONE used to be 0, colliding with the real tier-0 value wherever a
+verified non-match legitimately gets stored in the same pair.tier column
+(see group.py's direct verification and the Task 20 review's finding I8)."""
 
 
 def classify(fields: dict, config: dict) -> int:

@@ -91,3 +91,40 @@ def test_chain_group_cannot_authorize_quarantine(tmp_path):
         "SELECT count(*) c FROM group_member WHERE is_keeper = 1"
     ).fetchone()["c"]
     assert keepers == 0
+
+
+def test_real_verification_stores_full_evidence_not_just_tier(tmp_path):
+    # Review finding I7 (root cause): direct verification's real (non-test-
+    # injected) path only wrote tier and verified_direct, leaving every
+    # coverage/bit-error/span field NULL -- discarding evidence for exactly
+    # the pairs a person most needs to inspect, and only surviving report
+    # rendering because of report.py's separate defensive fix.
+    #
+    # The gap only shows up on a pair candidate generation actually missed
+    # (no pre-existing row for it to merge onto), which a small, fully
+    # redundant fixture like _library does not naturally produce -- every
+    # pair is already found and carries full evidence before verification
+    # even runs. Deleting one edge's row simulates a real capped-index miss.
+    conn = _library(tmp_path)
+    run_id = matchrun.run_match(conn)
+    existing = conn.execute(
+        "SELECT a_content_id, b_content_id FROM pair "
+        "WHERE run_id = ? AND tier = 1 LIMIT 1", (run_id,)).fetchone()
+    assert existing is not None  # sanity: the edge really exists first
+    a, b = existing["a_content_id"], existing["b_content_id"]
+    conn.execute(
+        "DELETE FROM pair WHERE run_id = ? AND a_content_id = ? "
+        "AND b_content_id = ?", (run_id, a, b))
+
+    group.build_groups(conn, run_id)
+
+    row = conn.execute(
+        "SELECT * FROM pair WHERE run_id = ? AND a_content_id = ? "
+        "AND b_content_id = ?", (run_id, a, b)
+    ).fetchone()
+    assert row is not None
+    assert row["verified_direct"] == 1
+    assert row["coverage_a"] is not None
+    assert row["coverage_b"] is not None
+    assert row["mean_bit_error"] is not None
+    assert row["matched_span_seconds"] is not None

@@ -83,6 +83,15 @@ def report_data(conn, run_id: int, tier: int | None = None) -> dict:
             "warnings": sorted(set(warnings))}
 
 
+def _fmt(value, spec: str) -> str:
+    """Format a possibly-NULL evidence field. A verification-only pair
+    (direct chain re-check with no captured full evidence) carries only
+    tier and verified_direct; every other field is NULL -- and that is
+    exactly the kind of group a person most needs to see in the report.
+    """
+    return "-" if value is None else format(value, spec)
+
+
 def render_text(data: dict) -> str:
     lines = [f"Match run {data['run_id']}", ""]
     if not data["groups"]:
@@ -99,9 +108,10 @@ def render_text(data: dict) -> str:
         for e in g["evidence"]:
             lines.append(
                 f"    {e['a']}~{e['b']} tier {e['tier']} "
-                f"cov {e['coverage_a']:.2f}/{e['coverage_b']:.2f} "
-                f"err {e['mean_bit_error']:.2f} "
-                f"span {e['matched_span_seconds']:.1f}s"
+                f"cov {_fmt(e['coverage_a'], '.2f')}/"
+                f"{_fmt(e['coverage_b'], '.2f')} "
+                f"err {_fmt(e['mean_bit_error'], '.2f')} "
+                f"span {_fmt(e['matched_span_seconds'], '.1f')}s"
             )
         lines.append("")
     for w in data["warnings"]:

@@ -77,3 +77,19 @@ def test_render_text_survives_a_newline_in_a_path(tmp_path):
     text = report.render_text(report.report_data(conn, 1))
     # The path is escaped, so it cannot forge a line of its own.
     assert "\\n" in text
+
+
+def test_render_text_survives_evidence_with_null_fields(tmp_path):
+    # Review finding I7: a pair verified only for tier (chain detection's
+    # direct verification when no full evidence was captured) carries tier
+    # and verified_direct but every numeric evidence field is NULL. This is
+    # exactly the group a person most needs to review, so the report must
+    # not crash on it.
+    conn = _fixture(tmp_path)
+    conn.execute(
+        "UPDATE pair SET coverage_a = NULL, coverage_b = NULL, "
+        "mean_bit_error = NULL, matched_span_seconds = NULL, "
+        "peak_vote_ratio = NULL, best_offset = NULL "
+        "WHERE run_id = 1 AND a_content_id = 1 AND b_content_id = 2")
+    text = report.render_text(report.report_data(conn, 1))
+    assert "1~2" in text

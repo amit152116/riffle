@@ -65,3 +65,12 @@ def test_compare_is_deterministic():
     a, b = _rand(400, 16), _rand(400, 16)
     results = {match.compare(a, b, CFG, ITEM) for _ in range(10)}
     assert len(results) == 1
+
+
+def test_tier_none_does_not_collide_with_tier_0():
+    # Review finding I8: TIER_NONE was 0, the same value as tier 0
+    # ("identical encoded audio stream"). A verified non-match (from
+    # group.py's direct chain verification, stored as a real pair.tier
+    # value) and a genuine tier-0 identity classification are conceptually
+    # unrelated but were numerically indistinguishable in that column.
+    assert match.TIER_NONE != 0

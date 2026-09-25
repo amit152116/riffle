@@ -13,13 +13,22 @@ LOSSLESS_SUFFIXES = frozenset({".flac", ".wav", ".alac", ".ape", ".wv"})
 
 
 def rank_key(row) -> tuple:
-    """Higher sorts better. Path is the final, deterministic tie-break."""
+    """Higher sorts better. Path is the final, deterministic tie-break.
+
+    Order: lossless > bitrate > tag completeness > longest duration >
+    oldest mtime. A missing mtime sorts *below* every real one -- mapping
+    it to 0.0 would make it outrank every real, positive -mtime, the
+    opposite of a safe default when nothing is actually known about it.
+    """
     suffix = Path(row["path"]).suffix.lower()
+    has_mtime = row["mtime"] is not None
     return (
         1 if suffix in LOSSLESS_SUFFIXES else 0,
         row["bitrate"] or 0,
         row["tag_completeness"] or 0,
-        (-row["mtime"]) if row["mtime"] is not None else 0.0,
+        row["duration"] or 0.0,
+        1 if has_mtime else 0,
+        (-row["mtime"]) if has_mtime else 0.0,
     )
 
 
@@ -30,7 +39,10 @@ def rank_group(conn, group_id: int) -> int | None:
         return None
 
     rows = conn.execute(
-        "SELECT t.* FROM group_member gm JOIN track t ON t.id = gm.track_id "
+        "SELECT t.*, ac.duration AS duration "
+        "FROM group_member gm "
+        "JOIN track t ON t.id = gm.track_id "
+        "JOIN audio_content ac ON ac.id = t.audio_content_id "
         "WHERE gm.group_id = ? AND t.present = 1", (group_id,)
     ).fetchall()
     if len(rows) < 2:

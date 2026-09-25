@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 from audiolib import scan, store
 from tests.fixtures import make_tone, retag
@@ -152,3 +153,47 @@ def test_retry_errors_flag_forces_retry(tmp_path):
     scan.scan(conn, [lib], retry_errors=True)
     assert conn.execute(
         "SELECT attempts FROM ingest_error").fetchone()["attempts"] == 2
+
+
+def test_non_utf8_filename_does_not_abort_the_whole_scan(tmp_path):
+    # Review finding I3: one file whose name contains invalid UTF-8 bytes
+    # (surrogate-escaped by the OS on POSIX) previously made the very first
+    # SQL bind for it raise UnicodeEncodeError, which propagated out of the
+    # per-file loop, aborted the scan entirely, and left every other file
+    # in the same library unscanned.
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    good = make_tone(lib / "a.flac", seconds=3.0)
+    bad_name = os.fsencode(str(lib)) + b"/b\xffx.flac"
+    bad_path = Path(os.fsdecode(bad_name))
+    bad_path.write_bytes(good.read_bytes())
+
+    conn = _db(tmp_path)
+    scan_id = scan.scan(conn, [lib])
+
+    assert conn.execute(
+        "SELECT status FROM scan_run WHERE id = ?", (scan_id,)
+    ).fetchone()["status"] == "complete"
+    assert conn.execute(
+        "SELECT count(*) c FROM track WHERE path LIKE '%a.flac'"
+    ).fetchone()["c"] == 1
+
+
+def test_scanning_one_root_does_not_mark_a_root_matching_its_own_wildcard(
+    tmp_path,
+):
+    # Review finding I10: SQL LIKE treats '_' and '%' in the root path as
+    # wildcards and ignores ASCII case, so a root named e.g. "my_music"
+    # could match tracks actually under an unrelated "myXmusic" or
+    # "MY_MUSIC" directory and wrongly mark them absent -- the exact thing
+    # the spec says scanning one root must never do to another.
+    one = tmp_path / "my_music"
+    two = tmp_path / "myXmusic"
+    make_tone(one / "a.flac", seconds=3.0)
+    make_tone(two / "b.flac", seconds=3.0, freq=1200)
+    conn = _db(tmp_path)
+    scan.scan(conn, [one, two])
+    scan.scan(conn, [one])
+    row = conn.execute(
+        "SELECT present FROM track WHERE path LIKE '%b.flac'").fetchone()
+    assert row["present"] == 1

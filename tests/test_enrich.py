@@ -49,6 +49,31 @@ def test_rate_limiter_spaces_calls():
     assert slept and slept[0] > 0
 
 
+def test_rate_limiter_accounts_for_time_spent_sleeping():
+    # Review finding I6: _last was captured before sleeping, not after, so
+    # any real per-request latency between calls let the effective rate
+    # drift above the configured cap -- reproduced with 20ms of latency
+    # between wait() calls, matching the finding's own simulation, which
+    # measured ~6 req/s against a configured 3 req/s (Global Constraint).
+    t = [0.0]
+
+    def clock():
+        return t[0]
+
+    def sleeper(seconds):
+        t[0] += seconds  # sleeping actually advances the clock
+
+    rl = enrich.RateLimiter(3.0, sleeper=sleeper, clock=clock)
+    calls = []
+    for _ in range(5):
+        rl.wait()
+        calls.append(t[0])
+        t[0] += 0.02  # 20ms of real request latency after each wait()
+
+    gaps = [b - a for a, b in zip(calls, calls[1:])]
+    assert all(g >= rl._interval - 1e-9 for g in gaps)
+
+
 def test_lookup_key_covers_the_whole_request():
     a = enrich.lookup_key(2, "AQAA", 300.0, "recordings")
     assert a == enrich.lookup_key(2, "AQAA", 300.0, "recordings")
@@ -65,7 +90,10 @@ def test_lookup_fingerprint_truncates_to_120_seconds(tmp_path):
     # long file to actually fingerprint.
     _content_with_fp(conn, tmp_path, n_items=2000)
     encoded, n = enrich.lookup_fingerprint(conn, 1, fingerprint.DEFAULT_CONFIG)
-    expected = int(round(120.0 / fingerprint.item_duration_seconds()))
+    # Not the naive 120/item_duration_seconds(): that overcounts by ignoring
+    # Chromaprint's fixed per-file delay (I4's second half). This is the
+    # same delay-aware count lookup_fingerprint itself now uses.
+    expected = fingerprint.lookup_window_items(120.0)
     assert abs(n - expected) <= 2
     assert isinstance(encoded, str) and encoded
 

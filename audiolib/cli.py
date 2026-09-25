@@ -114,7 +114,8 @@ def apply(run: int = typer.Option(..., "--run")):
         roots = [Path(r) for r in json.loads(row["roots"])] if row else []
         result = quarantine.apply_run(conn, run, roots)
     typer.echo(f"moved {result['moved']}, failed {result['failed']}, "
-               f"skipped groups {result['skipped_groups']}")
+               f"skipped groups {result['skipped_groups']}, "
+               f"modified since run {result['modified']}")
 
 
 @app.command()

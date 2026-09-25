@@ -32,6 +32,19 @@ def test_item_duration_is_plausible():
     assert 0.05 < d < 0.5
 
 
+def test_item_duration_matches_the_true_chromaprint_constant():
+    # Review finding I4: the original ctypes call queried chromaprint_new()
+    # with the fpcalc CLI's algorithm NUMBER (2) directly, but that number
+    # and the library's internal enum are offset by one -- enum 2 reports
+    # item_duration=4096, sample_rate=11025 (0.3715s/item, ~3x too high),
+    # while the correct enum (algorithm - 1 = 1) reports item_duration=1365
+    # (0.12381s/item), matching the spec's own "about 0.124" and Task 10's
+    # hardcoded ITEM=0.1238 test constant. Verified directly against a real
+    # fpcalc round-trip, not assumed.
+    d = fingerprint.item_duration_seconds()
+    assert abs(d - 0.12381) < 0.0001
+
+
 def test_transcode_fingerprints_similarly(tmp_path):
     a = make_tone(tmp_path / "a.flac", seconds=20.0)
     b = transcode(a, tmp_path / "a.mp3", codec="libmp3lame", bitrate="128k")

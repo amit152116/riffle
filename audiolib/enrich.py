@@ -36,14 +36,27 @@ class RateLimiter:
             remaining = self._interval - (now - self._last)
             if remaining > 0:
                 self._sleep(remaining)
+                # Refresh: sleeping advanced the clock, so the pre-sleep
+                # `now` is stale. Any real per-request latency between
+                # calls otherwise compounds against this staleness and lets
+                # the effective rate drift above the configured cap -- see
+                # test_rate_limiter_accounts_for_time_spent_sleeping.
+                now = self._clock()
         self._last = now
 
 
 def encode(raw: np.ndarray, algorithm: int) -> str:
+    """Re-encode a raw fingerprint. `algorithm` is fpcalc's CLI number (as
+    stored in `fingerprint.algorithm`), translated to chromaprint's
+    internal enum before calling the C API -- see
+    `fingerprint.internal_algorithm` for why the two are not the same
+    number, and the Task 20 review's finding I5.
+    """
     import chromaprint
 
     return chromaprint.encode_fingerprint(
-        [int(x) for x in raw], algorithm, base64=True
+        [int(x) for x in raw], fingerprint.internal_algorithm(algorithm),
+        base64=True
     ).decode("ascii")
 
 
@@ -84,8 +97,7 @@ def _prefix_slicing_is_valid() -> bool:
             check=True,
         )
         full = fingerprint.fingerprint_file(ref).raw
-        item_seconds = fingerprint.item_duration_seconds()
-        n = min(len(full), int(round(LOOKUP_SECONDS / item_seconds)))
+        n = min(len(full), fingerprint.lookup_window_items(LOOKUP_SECONDS))
         native = fingerprint.fingerprint_file(
             ref, dict(fingerprint.DEFAULT_CONFIG, length=LOOKUP_SECONDS)).raw
 
@@ -151,9 +163,7 @@ def lookup_fingerprint(conn, content_id: int, config: dict) -> tuple[str, int]:
 
     canonical_raw = store.unpack_fingerprint(canonical["fp_raw"],
                                              canonical["fp_length"])
-    item_seconds = fingerprint.item_duration_seconds()
-    n = min(len(canonical_raw),
-            int(round(LOOKUP_SECONDS / item_seconds)))
+    n = min(len(canonical_raw), fingerprint.lookup_window_items(LOOKUP_SECONDS))
 
     # A fingerprint short enough to already be within the lookup window needs
     # no slicing decision at all: the canonical array itself, taken whole, is

@@ -129,6 +129,19 @@ def scan(conn, roots: list[Path], verify_hashes: bool = False,
 
     try:
         for path in walk_audio_files(roots):
+            try:
+                str(path).encode("utf-8")
+            except UnicodeEncodeError:
+                # The OS surrogate-escapes bytes that are not valid UTF-8
+                # (e.g. a filename in a stale legacy encoding). Every text
+                # column downstream (ingest_error, track, ...) is UTF-8, and
+                # storing this path anywhere would raise the same error --
+                # letting it propagate here aborted scanning every other
+                # file in the library. It cannot be tracked without a
+                # storage change (e.g. an os.fsencode BLOB column), so it is
+                # skipped, deterministically, on every scan until renamed.
+                continue
+
             st = path.stat()
 
             err = conn.execute(
@@ -187,12 +200,19 @@ def scan(conn, roots: list[Path], verify_hashes: bool = False,
 
         # Only tracks under this scan's roots may be marked absent, and only
         # after the scan completes. A failed scan marks nothing.
+        #
+        # This is an exact prefix comparison, not LIKE: LIKE treats '_' and
+        # '%' in the root path as wildcards and ignores ASCII case, so a
+        # root such as "my_music" could match an unrelated "myXmusic" or
+        # "MY_MUSIC" directory and wrongly mark its tracks absent -- exactly
+        # what scanning one root must never do to another.
         for root in roots:
+            prefix = f"{root}{os.sep}"
             conn.execute(
                 "UPDATE track SET present = 0, absent_reason = 'missing' "
-                "WHERE path LIKE ? AND present = 1 "
+                "WHERE substr(path, 1, ?) = ? AND present = 1 "
                 "AND (last_seen_scan_id IS NULL OR last_seen_scan_id != ?)",
-                (f"{root}{os.sep}%", scan_id),
+                (len(prefix), prefix, scan_id),
             )
         conn.execute(
             "UPDATE scan_run SET status='complete', completed_at=? WHERE id=?",
