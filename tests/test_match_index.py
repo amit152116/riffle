@@ -1,6 +1,6 @@
 import numpy as np
 
-from audiolib import match
+from riffle import match
 
 
 def test_candidate_key_takes_the_top_bits():

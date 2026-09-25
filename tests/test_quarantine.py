@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from audiolib import hashing, quarantine, scan, store
+from riffle import hashing, quarantine, scan, store
 from tests.fixtures import make_tone
 
 

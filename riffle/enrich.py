@@ -14,7 +14,7 @@ from functools import lru_cache
 
 import numpy as np
 
-from audiolib import fingerprint, store
+from riffle import fingerprint, store
 
 ACOUSTID_RATE = 3.0  # requests per second, per the service's guidelines
 META = "recordings+releasegroups+compress"

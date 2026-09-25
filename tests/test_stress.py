@@ -1,7 +1,7 @@
 import resource
 import time
 
-from audiolib import fingerprint, match, matchrun, scan, store
+from riffle import fingerprint, match, matchrun, scan, store
 from tests.fixtures import concat, make_silence, make_tone
 
 

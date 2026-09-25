@@ -1,5 +1,5 @@
 [project]
-name = "audiolib"
+name = "riffle"
 version = "0.1.0"
 description = "Local music library scanner and duplicate detector"
 requires-python = ">=3.12,<3.13"
@@ -11,7 +11,7 @@ dependencies = [
 ]
 
 [project.scripts]
-audiolib = "audiolib.cli:app"
+riffle = "riffle.cli:app"
 
 [dependency-groups]
 dev = ["pytest>=8.0"]

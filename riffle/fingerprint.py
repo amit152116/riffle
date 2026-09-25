@@ -15,7 +15,7 @@ from pathlib import Path
 
 import numpy as np
 
-from audiolib import store
+from riffle import store
 
 ANALYZER = "chromaprint"
 DEFAULT_CONFIG = {"length": 0, "algorithm": 2, "raw": True}

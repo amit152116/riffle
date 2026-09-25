@@ -9,12 +9,12 @@ from pathlib import Path
 
 import mutagen
 
-from audiolib import hashing
+from riffle import hashing
 
 AUDIO_EXTENSIONS = frozenset(
     {".mp3", ".flac", ".m4a", ".ogg", ".opus", ".wav", ".wma", ".aac"}
 )
-QUARANTINE_DIRNAME = ".audiolib-quarantine"
+QUARANTINE_DIRNAME = ".riffle-quarantine"
 
 
 def _now() -> str:

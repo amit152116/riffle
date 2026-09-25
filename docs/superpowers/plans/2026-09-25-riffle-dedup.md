@@ -1,4 +1,4 @@
-# audiolib Spec 1 Implementation Plan
+# riffle Spec 1 Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, `uv`, SQLite (stdlib `sqlite3`, WAL mode), numpy, typer, mutagen, pyacoustid, pytest. External binaries: `ffmpeg`, `fpcalc` (from `libchromaprint-tools` 1.5.1).
 
-**Spec:** `docs/superpowers/specs/2026-09-25-audiolib-dedup-design.md`
+**Spec:** `docs/superpowers/specs/2026-09-25-riffle-dedup-design.md`
 
 ## Global Constraints
 
@@ -42,14 +42,14 @@ Input classes the spec implies but that no task's own happy-path tests would exe
 
 **Files:**
 - Create: `pyproject.toml`
-- Create: `audiolib/__init__.py`
+- Create: `riffle/__init__.py`
 - Create: `tests/__init__.py`
 - Create: `tests/test_environment.py`
 - Create: `README.md`
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: an importable `audiolib` package; `audiolib.__version__` (str).
+- Produces: an importable `riffle` package; `riffle.__version__` (str).
 
 - [ ] **Step 1: Ask the user to approve installing the system package**
 
@@ -74,7 +74,7 @@ Expected: both binaries resolve, `fpcalc` reports a 1.5.x version, `streamhash` 
 ```toml
 # pyproject.toml
 [project]
-name = "audiolib"
+name = "riffle"
 version = "0.1.0"
 description = "Local music library scanner and duplicate detector"
 requires-python = ">=3.12,<3.13"
@@ -86,7 +86,7 @@ dependencies = [
 ]
 
 [project.scripts]
-audiolib = "audiolib.cli:app"
+riffle = "riffle.cli:app"
 
 [dependency-groups]
 dev = ["pytest>=8.0"]
@@ -97,7 +97,7 @@ build-backend = "hatchling.build"
 ```
 
 ```python
-# audiolib/__init__.py
+# riffle/__init__.py
 __version__ = "0.1.0"
 ```
 
@@ -112,11 +112,11 @@ __version__ = "0.1.0"
 import shutil
 import subprocess
 
-import audiolib
+import riffle
 
 
 def test_package_imports():
-    assert audiolib.__version__ == "0.1.0"
+    assert riffle.__version__ == "0.1.0"
 
 
 def test_ffmpeg_available():
@@ -147,12 +147,12 @@ Expected: 4 passed. If `test_fpcalc_available` fails, return to Step 1.
 - [ ] **Step 6: Write the README**
 
 ```markdown
-# audiolib
+# riffle
 
 Local music library scanner and duplicate detector.
 
-Design: `docs/superpowers/specs/2026-09-25-audiolib-dedup-design.md`
-Plan: `docs/superpowers/plans/2026-09-25-audiolib-dedup.md`
+Design: `docs/superpowers/specs/2026-09-25-riffle-dedup-design.md`
+Plan: `docs/superpowers/plans/2026-09-25-riffle-dedup.md`
 
 ## Requirements
 
@@ -162,11 +162,11 @@ Plan: `docs/superpowers/plans/2026-09-25-audiolib-dedup.md`
 
 ## Usage
 
-    uv run audiolib scan ~/Music
-    uv run audiolib match
-    uv run audiolib report --run 1
-    uv run audiolib approve --run 1 --tier 1 --all
-    uv run audiolib apply --run 1
+    uv run riffle scan ~/Music
+    uv run riffle match
+    uv run riffle report --run 1
+    uv run riffle approve --run 1 --tier 1 --all
+    uv run riffle apply --run 1
 
 Nothing is ever deleted. `apply` moves losers into a quarantine directory
 on the same filesystem, and `undo` puts them back.
@@ -175,7 +175,7 @@ on the same filesystem, and `undo` puts them back.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add pyproject.toml uv.lock audiolib tests README.md
+git add pyproject.toml uv.lock riffle tests README.md
 git commit -m "feat: project scaffold and environment checks"
 ```
 
@@ -357,7 +357,7 @@ git commit -m "test: ffmpeg-backed audio fixture generators"
 ### Task 3: Store — schema, migrations, WAL, locking, serialization
 
 **Files:**
-- Create: `audiolib/store.py`
+- Create: `riffle/store.py`
 - Create: `tests/test_store.py`
 
 **Interfaces:**
@@ -379,7 +379,7 @@ import sqlite3
 import numpy as np
 import pytest
 
-from audiolib import store
+from riffle import store
 
 
 def test_connect_creates_schema(tmp_path):
@@ -454,12 +454,12 @@ def test_exclusive_lock_blocks_second_holder(tmp_path):
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `uv run pytest tests/test_store.py -v`
-Expected: FAIL with `ImportError: cannot import name 'store' from 'audiolib'`
+Expected: FAIL with `ImportError: cannot import name 'store' from 'riffle'`
 
 - [ ] **Step 3: Implement the store**
 
 ```python
-# audiolib/store.py
+# riffle/store.py
 """SQLite schema, migrations, locking, and fingerprint serialization."""
 from __future__ import annotations
 
@@ -474,7 +474,7 @@ SCHEMA_VERSION = 1
 
 
 class LockError(Exception):
-    """Another audiolib process holds the database lock."""
+    """Another riffle process holds the database lock."""
 
 
 _MIGRATION_1 = """
@@ -679,7 +679,7 @@ def exclusive_lock(db_path: Path):
             fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
             raise LockError(
-                f"another audiolib process holds {lock_path}"
+                f"another riffle process holds {lock_path}"
             ) from exc
         yield
     finally:
@@ -704,7 +704,7 @@ Expected: 8 passed.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add audiolib/store.py tests/test_store.py
+git add riffle/store.py tests/test_store.py
 git commit -m "feat: sqlite schema, migrations, locking, fingerprint serialization"
 ```
 
@@ -713,7 +713,7 @@ git commit -m "feat: sqlite schema, migrations, locking, fingerprint serializati
 ### Task 4: Audio-stream hashing
 
 **Files:**
-- Create: `audiolib/hashing.py`
+- Create: `riffle/hashing.py`
 - Create: `tests/test_hashing.py`
 
 **Interfaces:**
@@ -731,7 +731,7 @@ git commit -m "feat: sqlite schema, migrations, locking, fingerprint serializati
 # tests/test_hashing.py
 import pytest
 
-from audiolib import hashing
+from riffle import hashing
 from tests.fixtures import make_tone, retag, transcode
 
 
@@ -793,12 +793,12 @@ def test_non_audio_file_raises(tmp_path):
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `uv run pytest tests/test_hashing.py -v`
-Expected: FAIL with `ImportError: cannot import name 'hashing' from 'audiolib'`
+Expected: FAIL with `ImportError: cannot import name 'hashing' from 'riffle'`
 
 - [ ] **Step 3: Implement hashing**
 
 ```python
-# audiolib/hashing.py
+# riffle/hashing.py
 """Audio identity.
 
 Identity is the hash of the encoded audio stream, not of the file. Stream
@@ -880,7 +880,7 @@ Expected: 7 passed.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add audiolib/hashing.py tests/test_hashing.py
+git add riffle/hashing.py tests/test_hashing.py
 git commit -m "feat: audio-stream hashing with whole-file fallback"
 ```
 
@@ -889,14 +889,14 @@ git commit -m "feat: audio-stream hashing with whole-file fallback"
 ### Task 5: Scan — walk, presence, tags, errors
 
 **Files:**
-- Create: `audiolib/scan.py`
+- Create: `riffle/scan.py`
 - Create: `tests/test_scan.py`
 
 **Interfaces:**
 - Consumes: `store.connect`, `hashing.audio_identity`, `hashing.HashError`
 - Produces:
   - `AUDIO_EXTENSIONS: frozenset[str]`
-  - `QUARANTINE_DIRNAME = ".audiolib-quarantine"`
+  - `QUARANTINE_DIRNAME = ".riffle-quarantine"`
   - `walk_audio_files(roots: list[Path]) -> Iterator[Path]` — skips quarantine dirs, does not follow directory symlinks, never revisits a `(dev, inode)`
   - `scan(conn, roots: list[Path], verify_hashes: bool = False, retry_errors: bool = False) -> int` — returns the `scan_run.id`
   - `should_retry(row, st) -> bool`
@@ -909,7 +909,7 @@ git commit -m "feat: audio-stream hashing with whole-file fallback"
 # tests/test_scan.py
 import os
 
-from audiolib import scan, store
+from riffle import scan, store
 from tests.fixtures import make_tone, retag
 
 
@@ -1066,12 +1066,12 @@ def test_retry_errors_flag_forces_retry(tmp_path):
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `uv run pytest tests/test_scan.py -v`
-Expected: FAIL with `ImportError: cannot import name 'scan' from 'audiolib'`
+Expected: FAIL with `ImportError: cannot import name 'scan' from 'riffle'`
 
 - [ ] **Step 3: Implement the scanner**
 
 ```python
-# audiolib/scan.py
+# riffle/scan.py
 """Filesystem walk, identity assignment, tags, presence, and error state."""
 from __future__ import annotations
 
@@ -1083,12 +1083,12 @@ from pathlib import Path
 
 import mutagen
 
-from audiolib import hashing
+from riffle import hashing
 
 AUDIO_EXTENSIONS = frozenset(
     {".mp3", ".flac", ".m4a", ".ogg", ".opus", ".wav", ".wma", ".aac"}
 )
-QUARANTINE_DIRNAME = ".audiolib-quarantine"
+QUARANTINE_DIRNAME = ".riffle-quarantine"
 
 
 def _now() -> str:
@@ -1289,7 +1289,7 @@ Expected: 13 passed.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add audiolib/scan.py tests/test_scan.py
+git add riffle/scan.py tests/test_scan.py
 git commit -m "feat: incremental scanner with presence and error state"
 ```
 
@@ -1298,7 +1298,7 @@ git commit -m "feat: incremental scanner with presence and error state"
 ### Task 6: Fingerprinting
 
 **Files:**
-- Create: `audiolib/fingerprint.py`
+- Create: `riffle/fingerprint.py`
 - Create: `tests/test_fingerprint.py`
 
 **Interfaces:**
@@ -1321,7 +1321,7 @@ git commit -m "feat: incremental scanner with presence and error state"
 import numpy as np
 import pytest
 
-from audiolib import fingerprint, scan, store
+from riffle import fingerprint, scan, store
 from tests.fixtures import make_tone, transcode
 
 
@@ -1398,12 +1398,12 @@ def test_fingerprint_pending_writes_one_artifact_per_content(tmp_path):
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `uv run pytest tests/test_fingerprint.py -v`
-Expected: FAIL with `ImportError: cannot import name 'fingerprint' from 'audiolib'`
+Expected: FAIL with `ImportError: cannot import name 'fingerprint' from 'riffle'`
 
 - [ ] **Step 3: Implement fingerprinting**
 
 ```python
-# audiolib/fingerprint.py
+# riffle/fingerprint.py
 """Chromaprint fingerprints via fpcalc.
 
 fpcalc's default caps at the first 120 seconds, which would hide every trim
@@ -1421,7 +1421,7 @@ from pathlib import Path
 
 import numpy as np
 
-from audiolib import store
+from riffle import store
 
 ANALYZER = "chromaprint"
 DEFAULT_CONFIG = {"length": 0, "algorithm": 2, "raw": True}
@@ -1554,7 +1554,7 @@ If `test_fingerprint_shape_matches_expectation` fails on parsing, print the raw 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add audiolib/fingerprint.py tests/test_fingerprint.py
+git add riffle/fingerprint.py tests/test_fingerprint.py
 git commit -m "feat: full-length chromaprint fingerprinting with versioned artifacts"
 ```
 
@@ -1563,7 +1563,7 @@ git commit -m "feat: full-length chromaprint fingerprinting with versioned artif
 ### Task 7: Candidate index with stop-key and occurrence caps
 
 **Files:**
-- Create: `audiolib/match.py`
+- Create: `riffle/match.py`
 - Create: `tests/test_match_index.py`
 
 **Interfaces:**
@@ -1581,7 +1581,7 @@ git commit -m "feat: full-length chromaprint fingerprinting with versioned artif
 # tests/test_match_index.py
 import numpy as np
 
-from audiolib import match
+from riffle import match
 
 
 def test_candidate_key_takes_the_top_bits():
@@ -1645,12 +1645,12 @@ def test_no_self_pairs():
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `uv run pytest tests/test_match_index.py -v`
-Expected: FAIL with `ImportError: cannot import name 'match' from 'audiolib'`
+Expected: FAIL with `ImportError: cannot import name 'match' from 'riffle'`
 
 - [ ] **Step 3: Implement the index**
 
 ```python
-# audiolib/match.py
+# riffle/match.py
 """Candidate generation and pairwise alignment.
 
 Constants follow Chromaprint's own FingerprintMatcher (src/fingerprint_matcher
@@ -1756,7 +1756,7 @@ Expected: 6 passed.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add audiolib/match.py tests/test_match_index.py
+git add riffle/match.py tests/test_match_index.py
 git commit -m "feat: candidate index with stop-key and occurrence caps"
 ```
 
@@ -1765,7 +1765,7 @@ git commit -m "feat: candidate index with stop-key and occurrence caps"
 ### Task 8: Offset histogram and peak selection
 
 **Files:**
-- Modify: `audiolib/match.py`
+- Modify: `riffle/match.py`
 - Create: `tests/test_match_offset.py`
 
 **Interfaces:**
@@ -1780,7 +1780,7 @@ git commit -m "feat: candidate index with stop-key and occurrence caps"
 # tests/test_match_offset.py
 import numpy as np
 
-from audiolib import match
+from riffle import match
 
 
 def _fp(values):
@@ -1834,9 +1834,9 @@ def test_peak_selection_is_deterministic_under_ties():
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `uv run pytest tests/test_match_offset.py -v`
-Expected: FAIL with `AttributeError: module 'audiolib.match' has no attribute 'offset_histogram'`
+Expected: FAIL with `AttributeError: module 'riffle.match' has no attribute 'offset_histogram'`
 
-- [ ] **Step 3: Append the implementation to `audiolib/match.py`**
+- [ ] **Step 3: Append the implementation to `riffle/match.py`**
 
 ```python
 def offset_histogram(fp_a: np.ndarray, fp_b: np.ndarray,
@@ -1895,7 +1895,7 @@ Expected: 5 passed.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add audiolib/match.py tests/test_match_offset.py
+git add riffle/match.py tests/test_match_offset.py
 git commit -m "feat: offset histogram with deterministic peak selection"
 ```
 
@@ -1904,7 +1904,7 @@ git commit -m "feat: offset histogram with deterministic peak selection"
 ### Task 9: Bit-error segmentation
 
 **Files:**
-- Modify: `audiolib/match.py`
+- Modify: `riffle/match.py`
 - Create: `tests/test_match_segments.py`
 
 **Interfaces:**
@@ -1923,7 +1923,7 @@ Upstream approximates the Gaussian with repeated box filters; this uses a trunca
 # tests/test_match_segments.py
 import numpy as np
 
-from audiolib import match
+from riffle import match
 
 
 def test_hamming_series_counts_differing_bits():
@@ -1996,9 +1996,9 @@ def test_segments_are_deterministic():
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `uv run pytest tests/test_match_segments.py -v`
-Expected: FAIL with `AttributeError: module 'audiolib.match' has no attribute 'hamming_series'`
+Expected: FAIL with `AttributeError: module 'riffle.match' has no attribute 'hamming_series'`
 
-- [ ] **Step 3: Append the implementation to `audiolib/match.py`**
+- [ ] **Step 3: Append the implementation to `riffle/match.py`**
 
 ```python
 from dataclasses import dataclass
@@ -2109,7 +2109,7 @@ Expected: 8 passed.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add audiolib/match.py tests/test_match_segments.py
+git add riffle/match.py tests/test_match_segments.py
 git commit -m "feat: deterministic bit-error segmentation"
 ```
 
@@ -2118,7 +2118,7 @@ git commit -m "feat: deterministic bit-error segmentation"
 ### Task 10: Pair evidence and tier classification
 
 **Files:**
-- Modify: `audiolib/match.py`
+- Modify: `riffle/match.py`
 - Create: `tests/test_match_evidence.py`
 
 **Interfaces:**
@@ -2136,7 +2136,7 @@ git commit -m "feat: deterministic bit-error segmentation"
 # tests/test_match_evidence.py
 import numpy as np
 
-from audiolib import match
+from riffle import match
 
 ITEM = 0.1238
 CFG = match.DEFAULT_MATCH_CONFIG
@@ -2206,9 +2206,9 @@ def test_compare_is_deterministic():
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `uv run pytest tests/test_match_evidence.py -v`
-Expected: FAIL with `AttributeError: module 'audiolib.match' has no attribute 'compare'`
+Expected: FAIL with `AttributeError: module 'riffle.match' has no attribute 'compare'`
 
-- [ ] **Step 3: Append the implementation to `audiolib/match.py`**
+- [ ] **Step 3: Append the implementation to `riffle/match.py`**
 
 ```python
 @dataclass(frozen=True)
@@ -2288,7 +2288,7 @@ Expected: 7 passed.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add audiolib/match.py tests/test_match_evidence.py
+git add riffle/match.py tests/test_match_evidence.py
 git commit -m "feat: pair evidence and tier classification"
 ```
 
@@ -2297,7 +2297,7 @@ git commit -m "feat: pair evidence and tier classification"
 ### Task 11: Match run — persist pairs for a whole library
 
 **Files:**
-- Create: `audiolib/matchrun.py`
+- Create: `riffle/matchrun.py`
 - Create: `tests/test_matchrun.py`
 
 **Interfaces:**
@@ -2310,7 +2310,7 @@ git commit -m "feat: pair evidence and tier classification"
 
 ```python
 # tests/test_matchrun.py
-from audiolib import fingerprint, matchrun, scan, store
+from riffle import fingerprint, matchrun, scan, store
 from tests.fixtures import make_tone, transcode
 
 
@@ -2373,12 +2373,12 @@ def test_absent_tracks_are_excluded(tmp_path):
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `uv run pytest tests/test_matchrun.py -v`
-Expected: FAIL with `ImportError: cannot import name 'matchrun' from 'audiolib'`
+Expected: FAIL with `ImportError: cannot import name 'matchrun' from 'riffle'`
 
 - [ ] **Step 3: Implement the run**
 
 ```python
-# audiolib/matchrun.py
+# riffle/matchrun.py
 """One matching pass over the library, recorded for reproducibility."""
 from __future__ import annotations
 
@@ -2387,8 +2387,8 @@ from datetime import datetime, timezone
 
 import numpy as np
 
-import audiolib
-from audiolib import fingerprint, match, store
+import riffle
+from riffle import fingerprint, match, store
 
 
 def load_fingerprints(conn) -> dict[int, np.ndarray]:
@@ -2413,7 +2413,7 @@ def run_match(conn, config: dict = match.DEFAULT_MATCH_CONFIG) -> int:
         (now,
          json.dumps(fingerprint.DEFAULT_CONFIG, sort_keys=True),
          json.dumps(config, sort_keys=True),
-         audiolib.__version__),
+         riffle.__version__),
     )
     run_id = cur.lastrowid
 
@@ -2465,7 +2465,7 @@ Expected: 5 passed.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add audiolib/matchrun.py tests/test_matchrun.py
+git add riffle/matchrun.py tests/test_matchrun.py
 git commit -m "feat: persist a match run with snapshot and pair evidence"
 ```
 
@@ -2474,7 +2474,7 @@ git commit -m "feat: persist a match run with snapshot and pair evidence"
 ### Task 12: Grouping — components, direct verification, chain detection
 
 **Files:**
-- Create: `audiolib/group.py`
+- Create: `riffle/group.py`
 - Create: `tests/test_group.py`
 
 **Interfaces:**
@@ -2490,7 +2490,7 @@ The caps make candidate generation lossy, so a missing edge is not evidence of a
 
 ```python
 # tests/test_group.py
-from audiolib import fingerprint, group, matchrun, scan, store
+from riffle import fingerprint, group, matchrun, scan, store
 from tests.fixtures import make_tone, transcode
 
 
@@ -2588,12 +2588,12 @@ def test_chain_group_cannot_authorize_quarantine(tmp_path):
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `uv run pytest tests/test_group.py -v`
-Expected: FAIL with `ImportError: cannot import name 'group' from 'audiolib'`
+Expected: FAIL with `ImportError: cannot import name 'group' from 'riffle'`
 
 - [ ] **Step 3: Implement grouping**
 
 ```python
-# audiolib/group.py
+# riffle/group.py
 """Content-level grouping, expanded to tracks at the end.
 
 The K and M caps make candidate generation lossy, so a missing edge is not
@@ -2606,7 +2606,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from itertools import combinations
 
-from audiolib import fingerprint, match, matchrun
+from riffle import fingerprint, match, matchrun
 
 
 def components(edges: set[tuple[int, int]]) -> list[set[int]]:
@@ -2727,7 +2727,7 @@ Expected: 6 passed.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add audiolib/group.py tests/test_group.py
+git add riffle/group.py tests/test_group.py
 git commit -m "feat: content-level grouping with direct verification and chain detection"
 ```
 
@@ -2736,7 +2736,7 @@ git commit -m "feat: content-level grouping with direct verification and chain d
 ### Task 13: Keeper ranking
 
 **Files:**
-- Create: `audiolib/rank.py`
+- Create: `riffle/rank.py`
 - Create: `tests/test_rank.py`
 
 **Interfaces:**
@@ -2750,7 +2750,7 @@ git commit -m "feat: content-level grouping with direct verification and chain d
 
 ```python
 # tests/test_rank.py
-from audiolib import rank, store
+from riffle import rank, store
 
 
 def _setup(tmp_path, tier=1, formed_by_chain=0):
@@ -2839,12 +2839,12 @@ def test_ranking_is_reproducible_under_full_ties(tmp_path):
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `uv run pytest tests/test_rank.py -v`
-Expected: FAIL with `ImportError: cannot import name 'rank' from 'audiolib'`
+Expected: FAIL with `ImportError: cannot import name 'rank' from 'riffle'`
 
 - [ ] **Step 3: Implement ranking**
 
 ```python
-# audiolib/rank.py
+# riffle/rank.py
 """Keeper selection.
 
 Only tier 0 and tier 1 groups may authorize quarantine, and a group that
@@ -2910,7 +2910,7 @@ Expected: 8 passed.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add audiolib/rank.py tests/test_rank.py
+git add riffle/rank.py tests/test_rank.py
 git commit -m "feat: deterministic keeper ranking"
 ```
 
@@ -2919,7 +2919,7 @@ git commit -m "feat: deterministic keeper ranking"
 ### Task 14: Report
 
 **Files:**
-- Create: `audiolib/report.py`
+- Create: `riffle/report.py`
 - Create: `tests/test_report.py`
 
 **Interfaces:**
@@ -2936,7 +2936,7 @@ The report carries the pairwise evidence for every member, so a group's basis is
 # tests/test_report.py
 import json
 
-from audiolib import report, store
+from riffle import report, store
 
 
 def _fixture(tmp_path):
@@ -3018,12 +3018,12 @@ def test_render_text_survives_a_newline_in_a_path(tmp_path):
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `uv run pytest tests/test_report.py -v`
-Expected: FAIL with `ImportError: cannot import name 'report' from 'audiolib'`
+Expected: FAIL with `ImportError: cannot import name 'report' from 'riffle'`
 
 - [ ] **Step 3: Implement the report**
 
 ```python
-# audiolib/report.py
+# riffle/report.py
 """Human-readable and JSON reports for a match run."""
 from __future__ import annotations
 
@@ -3143,7 +3143,7 @@ Expected: 7 passed.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add audiolib/report.py tests/test_report.py
+git add riffle/report.py tests/test_report.py
 git commit -m "feat: json and text reports with pairwise evidence"
 ```
 
@@ -3152,7 +3152,7 @@ git commit -m "feat: json and text reports with pairwise evidence"
 ### Task 15: Approval state
 
 **Files:**
-- Create: `audiolib/approve.py`
+- Create: `riffle/approve.py`
 - Create: `tests/test_approve.py`
 
 **Interfaces:**
@@ -3172,7 +3172,7 @@ git commit -m "feat: json and text reports with pairwise evidence"
 # tests/test_approve.py
 import pytest
 
-from audiolib import approve, store
+from riffle import approve, store
 
 
 def _fixture(tmp_path):
@@ -3260,12 +3260,12 @@ def test_unknown_group_raises(tmp_path):
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `uv run pytest tests/test_approve.py -v`
-Expected: FAIL with `ImportError: cannot import name 'approve' from 'audiolib'`
+Expected: FAIL with `ImportError: cannot import name 'approve' from 'riffle'`
 
 - [ ] **Step 3: Implement approval**
 
 ```python
-# audiolib/approve.py
+# riffle/approve.py
 """Persisted confirmation.
 
 Only tier 0 and tier 1 groups may be approved, and never one that cohered
@@ -3336,7 +3336,7 @@ Expected: 9 passed.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add audiolib/approve.py tests/test_approve.py
+git add riffle/approve.py tests/test_approve.py
 git commit -m "feat: persisted approval state gating quarantine"
 ```
 
@@ -3345,7 +3345,7 @@ git commit -m "feat: persisted approval state gating quarantine"
 ### Task 16: Quarantine — apply
 
 **Files:**
-- Create: `audiolib/quarantine.py`
+- Create: `riffle/quarantine.py`
 - Create: `tests/test_quarantine.py`
 
 **Interfaces:**
@@ -3367,7 +3367,7 @@ import os
 
 import pytest
 
-from audiolib import hashing, quarantine, scan, store
+from riffle import hashing, quarantine, scan, store
 from tests.fixtures import make_tone
 
 
@@ -3491,12 +3491,12 @@ def test_group_decision_becomes_applied(tmp_path):
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `uv run pytest tests/test_quarantine.py -v`
-Expected: FAIL with `ImportError: cannot import name 'quarantine' from 'audiolib'`
+Expected: FAIL with `ImportError: cannot import name 'quarantine' from 'riffle'`
 
 - [ ] **Step 3: Implement apply**
 
 ```python
-# audiolib/quarantine.py
+# riffle/quarantine.py
 """Moving losers out of the library, reversibly.
 
 Invariants:
@@ -3514,7 +3514,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-from audiolib import hashing, scan
+from riffle import hashing, scan
 
 
 class QuarantineError(Exception):
@@ -3633,7 +3633,7 @@ Expected: 9 passed.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add audiolib/quarantine.py tests/test_quarantine.py
+git add riffle/quarantine.py tests/test_quarantine.py
 git commit -m "feat: verified quarantine with keeper-first safety check"
 ```
 
@@ -3642,7 +3642,7 @@ git commit -m "feat: verified quarantine with keeper-first safety check"
 ### Task 17: Undo
 
 **Files:**
-- Modify: `audiolib/quarantine.py`
+- Modify: `riffle/quarantine.py`
 - Create: `tests/test_undo.py`
 
 **Interfaces:**
@@ -3655,7 +3655,7 @@ git commit -m "feat: verified quarantine with keeper-first safety check"
 # tests/test_undo.py
 from pathlib import Path
 
-from audiolib import quarantine
+from riffle import quarantine
 from tests.test_quarantine import _fixture
 
 
@@ -3707,9 +3707,9 @@ def test_undo_is_idempotent(tmp_path):
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `uv run pytest tests/test_undo.py -v`
-Expected: FAIL with `AttributeError: module 'audiolib.quarantine' has no attribute 'undo_run'`
+Expected: FAIL with `AttributeError: module 'riffle.quarantine' has no attribute 'undo_run'`
 
-- [ ] **Step 3: Append the implementation to `audiolib/quarantine.py`**
+- [ ] **Step 3: Append the implementation to `riffle/quarantine.py`**
 
 ```python
 def undo_run(conn, run_id: int) -> dict:
@@ -3756,7 +3756,7 @@ Expected: 5 passed.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add audiolib/quarantine.py tests/test_undo.py
+git add riffle/quarantine.py tests/test_undo.py
 git commit -m "feat: undo restores quarantined files without overwriting"
 ```
 
@@ -3765,7 +3765,7 @@ git commit -m "feat: undo restores quarantined files without overwriting"
 ### Task 18: AcoustID enrichment
 
 **Files:**
-- Create: `audiolib/enrich.py`
+- Create: `riffle/enrich.py`
 - Create: `tests/test_enrich.py`
 
 **Interfaces:**
@@ -3788,7 +3788,7 @@ import time
 import numpy as np
 import pytest
 
-from audiolib import enrich, fingerprint, store
+from riffle import enrich, fingerprint, store
 
 
 def _content_with_fp(conn, n_items=2000, cid=1):
@@ -3900,12 +3900,12 @@ def test_prefix_compatibility_check(tmp_path):
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `uv run pytest tests/test_enrich.py -v`
-Expected: FAIL with `ImportError: cannot import name 'enrich' from 'audiolib'`
+Expected: FAIL with `ImportError: cannot import name 'enrich' from 'riffle'`
 
 - [ ] **Step 3: Implement enrichment**
 
 ```python
-# audiolib/enrich.py
+# riffle/enrich.py
 """AcoustID enrichment: best-effort, rate-limited, cached, resumable.
 
 Local matching is authoritative. Enrichment may fail, be throttled, or return
@@ -3921,7 +3921,7 @@ from datetime import datetime, timezone
 
 import numpy as np
 
-from audiolib import fingerprint, store
+from riffle import fingerprint, store
 
 ACOUSTID_RATE = 3.0  # requests per second, per the service's guidelines
 META = "recordings+releasegroups+compress"
@@ -4040,7 +4040,7 @@ If `test_prefix_compatibility_check` skips, the assumption is false. Add a step 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add audiolib/enrich.py tests/test_enrich.py
+git add riffle/enrich.py tests/test_enrich.py
 git commit -m "feat: rate-limited, cached AcoustID enrichment"
 ```
 
@@ -4049,7 +4049,7 @@ git commit -m "feat: rate-limited, cached AcoustID enrichment"
 ### Task 19: Calibration
 
 **Files:**
-- Create: `audiolib/calibrate.py`
+- Create: `riffle/calibrate.py`
 - Create: `tests/test_calibrate.py`
 
 **Interfaces:**
@@ -4069,7 +4069,7 @@ import json
 
 import pytest
 
-from audiolib import calibrate, match
+from riffle import calibrate, match
 from tests.fixtures import make_tone, transcode, trim
 
 
@@ -4133,12 +4133,12 @@ def test_search_reports_both_sets(tmp_path):
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `uv run pytest tests/test_calibrate.py -v`
-Expected: FAIL with `ImportError: cannot import name 'calibrate' from 'audiolib'`
+Expected: FAIL with `ImportError: cannot import name 'calibrate' from 'riffle'`
 
 - [ ] **Step 3: Implement calibration**
 
 ```python
-# audiolib/calibrate.py
+# riffle/calibrate.py
 """Threshold tuning against known pairs, validated on a holdout set.
 
 Upstream's constants are the starting point. Calibration confirms or adjusts
@@ -4152,7 +4152,7 @@ import json
 from collections import Counter
 from pathlib import Path
 
-from audiolib import fingerprint, match
+from riffle import fingerprint, match
 
 REQUIRED_EXPECTATIONS = {0, 1, 2}
 REQUIRED_SETS = {"calibrate", "holdout"}
@@ -4242,7 +4242,7 @@ Expected: 5 passed.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add audiolib/calibrate.py tests/test_calibrate.py
+git add riffle/calibrate.py tests/test_calibrate.py
 git commit -m "feat: threshold calibration with a holdout set"
 ```
 
@@ -4251,14 +4251,14 @@ git commit -m "feat: threshold calibration with a holdout set"
 ### Task 20: CLI, end-to-end determinism, and the candidate-explosion stress test
 
 **Files:**
-- Create: `audiolib/cli.py`
+- Create: `riffle/cli.py`
 - Create: `tests/test_cli.py`
 - Create: `tests/test_e2e.py`
 - Create: `tests/test_stress.py`
 
 **Interfaces:**
 - Consumes: every module.
-- Produces: the `audiolib` console script with `scan`, `match`, `report`, `approve`, `reject`, `apply`, `undo`, `enrich`, `calibrate`.
+- Produces: the `riffle` console script with `scan`, `match`, `report`, `approve`, `reject`, `apply`, `undo`, `enrich`, `calibrate`.
 
 - [ ] **Step 1: Write the failing CLI test**
 
@@ -4266,7 +4266,7 @@ git commit -m "feat: threshold calibration with a holdout set"
 # tests/test_cli.py
 from typer.testing import CliRunner
 
-from audiolib.cli import app
+from riffle.cli import app
 from tests.fixtures import make_tone
 
 runner = CliRunner()
@@ -4320,7 +4320,7 @@ def test_bulk_approve_requires_confirmation(tmp_path):
 
 
 def test_concurrent_invocation_is_refused(tmp_path):
-    from audiolib import store
+    from riffle import store
 
     db = tmp_path / "db.sqlite"
     with store.exclusive_lock(db):
@@ -4331,12 +4331,12 @@ def test_concurrent_invocation_is_refused(tmp_path):
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `uv run pytest tests/test_cli.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'audiolib.cli'`
+Expected: FAIL with `ModuleNotFoundError: No module named 'riffle.cli'`
 
 - [ ] **Step 3: Implement the CLI**
 
 ```python
-# audiolib/cli.py
+# riffle/cli.py
 """Command-line interface."""
 from __future__ import annotations
 
@@ -4345,7 +4345,7 @@ from pathlib import Path
 
 import typer
 
-from audiolib import (approve as approve_mod, fingerprint, group, matchrun,
+from riffle import (approve as approve_mod, fingerprint, group, matchrun,
                       quarantine, rank, report as report_mod, scan as scan_mod,
                       store)
 
@@ -4354,7 +4354,7 @@ _state: dict = {}
 
 
 @app.callback()
-def main(db: str = typer.Option("audiolib.sqlite", help="Database path")):
+def main(db: str = typer.Option("riffle.sqlite", help="Database path")):
     _state["db"] = Path(db)
 
 
@@ -4454,7 +4454,7 @@ def undo(run: int = typer.Option(..., "--run")):
 
 @app.command()
 def enrich(api_key: str = typer.Option(..., envvar="ACOUSTID_API_KEY")):
-    from audiolib import enrich as enrich_mod
+    from riffle import enrich as enrich_mod
 
     conn = _open()
     result = enrich_mod.enrich(conn, api_key)
@@ -4464,8 +4464,8 @@ def enrich(api_key: str = typer.Option(..., envvar="ACOUSTID_API_KEY")):
 
 @app.command()
 def calibrate(pairs_file: str):
-    from audiolib import calibrate as cal_mod
-    from audiolib import match as match_mod
+    from riffle import calibrate as cal_mod
+    from riffle import match as match_mod
 
     entries = cal_mod.load_pairs(Path(pairs_file))
     best, scores = cal_mod.search(entries, match_mod.DEFAULT_MATCH_CONFIG)
@@ -4484,7 +4484,7 @@ Expected: 4 passed.
 # tests/test_e2e.py
 import json
 
-from audiolib import (fingerprint, group, matchrun, quarantine, rank,
+from riffle import (fingerprint, group, matchrun, quarantine, rank,
                       report, scan, store, approve)
 from tests.fixtures import make_tone, transcode, trim, retag
 
@@ -4561,7 +4561,7 @@ def test_two_runs_produce_identical_reports(tmp_path):
 import resource
 import time
 
-from audiolib import fingerprint, match, matchrun, scan, store
+from riffle import fingerprint, match, matchrun, scan, store
 from tests.fixtures import concat, make_silence, make_tone
 
 
@@ -4619,7 +4619,7 @@ Expected: every test passes. If `test_two_runs_produce_identical_reports` fails,
 - [ ] **Step 7: Commit**
 
 ```bash
-git add audiolib/cli.py tests/test_cli.py tests/test_e2e.py tests/test_stress.py
+git add riffle/cli.py tests/test_cli.py tests/test_e2e.py tests/test_stress.py
 git commit -m "feat: cli, end-to-end determinism, and candidate-explosion stress test"
 ```
 

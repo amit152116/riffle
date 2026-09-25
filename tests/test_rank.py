@@ -1,4 +1,4 @@
-from audiolib import rank, store
+from riffle import rank, store
 
 
 def _setup(tmp_path, tier=1, formed_by_chain=0):

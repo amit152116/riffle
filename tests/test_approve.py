@@ -1,6 +1,6 @@
 import pytest
 
-from audiolib import approve, store
+from riffle import approve, store
 
 
 def _fixture(tmp_path):

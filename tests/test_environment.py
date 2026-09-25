@@ -1,11 +1,11 @@
 import shutil
 import subprocess
 
-import audiolib
+import riffle
 
 
 def test_package_imports():
-    assert audiolib.__version__ == "0.1.0"
+    assert riffle.__version__ == "0.1.0"
 
 
 def test_ffmpeg_available():

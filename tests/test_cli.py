@@ -1,6 +1,6 @@
 from typer.testing import CliRunner
 
-from audiolib.cli import app
+from riffle.cli import app
 from tests.fixtures import make_tone
 
 runner = CliRunner()
@@ -54,7 +54,7 @@ def test_bulk_approve_requires_confirmation(tmp_path):
 
 
 def test_concurrent_invocation_is_refused(tmp_path):
-    from audiolib import store
+    from riffle import store
 
     db = tmp_path / "db.sqlite"
     with store.exclusive_lock(db):

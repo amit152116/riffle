@@ -12,7 +12,7 @@ SCHEMA_VERSION = 1
 
 
 class LockError(Exception):
-    """Another audiolib process holds the database lock."""
+    """Another riffle process holds the database lock."""
 
 
 _MIGRATION_1 = """
@@ -217,7 +217,7 @@ def exclusive_lock(db_path: Path):
             fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
             raise LockError(
-                f"another audiolib process holds {lock_path}"
+                f"another riffle process holds {lock_path}"
             ) from exc
         yield
     finally:

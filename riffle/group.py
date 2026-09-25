@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from itertools import combinations
 
-from audiolib import fingerprint, match, matchrun
+from riffle import fingerprint, match, matchrun
 
 
 def components(edges: set[tuple[int, int]]) -> list[set[int]]:

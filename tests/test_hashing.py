@@ -1,6 +1,6 @@
 import pytest
 
-from audiolib import hashing
+from riffle import hashing
 from tests.fixtures import make_tone, retag, transcode
 
 

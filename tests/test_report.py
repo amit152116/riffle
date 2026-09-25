@@ -1,6 +1,6 @@
 import json
 
-from audiolib import report, store
+from riffle import report, store
 
 
 def _fixture(tmp_path):

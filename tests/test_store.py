@@ -3,7 +3,7 @@ import sqlite3
 import numpy as np
 import pytest
 
-from audiolib import store
+from riffle import store
 
 
 def test_connect_creates_schema(tmp_path):

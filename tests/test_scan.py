@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 
-from audiolib import scan, store
+from riffle import scan, store
 from tests.fixtures import make_tone, retag
 
 

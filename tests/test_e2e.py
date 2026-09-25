@@ -1,6 +1,6 @@
 import json
 
-from audiolib import (fingerprint, group, matchrun, quarantine, rank,
+from riffle import (fingerprint, group, matchrun, quarantine, rank,
                       report, scan, store, approve)
 from tests.fixtures import make_tone, transcode, trim, retag
 

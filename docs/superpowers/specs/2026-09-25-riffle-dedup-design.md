@@ -1,4 +1,4 @@
-# audiolib — Spec 1: Library Base + Duplicate Detection
+# riffle — Spec 1: Library Base + Duplicate Detection
 
 Date: 2026-09-25
 Status: Draft for review (revision 3)
@@ -173,7 +173,7 @@ At this scale SQLite is sufficient for tracks, content, artifacts, collections, 
 Python 3.12, environment via `uv`, CLI via `typer`. Each module has one responsibility and is testable in isolation.
 
 ```
-audiolib/
+riffle/
   store.py       # SQLite schema, migrations, queries
   scan.py        # walk, stat, audio-stream hash, tags, presence, errors
   fingerprint.py # fpcalc invocation -> raw uint32 array
@@ -189,7 +189,7 @@ audiolib/
 
 External binaries: `ffmpeg` (present), `fpcalc` (must be installed; requires user approval).
 
-SQLite runs in WAL mode with a single writer. Concurrent `audiolib` invocations are not supported; a lock file makes the second invocation fail with a clear message rather than corrupting a run.
+SQLite runs in WAL mode with a single writer. Concurrent `riffle` invocations are not supported; a lock file makes the second invocation fail with a clear message rather than corrupting a run.
 
 ## Data model
 
@@ -454,11 +454,11 @@ The requirement is "auto-ranked, user confirms", so confirmation lives in the da
 Every group is created `decision = 'proposed'`. `apply` acts **only** on groups whose decision is `approved`, and a group with no approval is skipped and counted in the summary.
 
 ```
-audiolib report --run 17                      # review proposals
-audiolib approve --run 17 --group 12          # approve one
-audiolib reject  --run 17 --group 12          # never propose again in this run
-audiolib approve --run 17 --tier 1 --all      # bulk, requires interactive confirmation
-audiolib apply   --run 17                     # act on approved groups only
+riffle report --run 17                      # review proposals
+riffle approve --run 17 --group 12          # approve one
+riffle reject  --run 17 --group 12          # never propose again in this run
+riffle approve --run 17 --tier 1 --all      # bulk, requires interactive confirmation
+riffle apply   --run 17                     # act on approved groups only
 ```
 
 Bulk approval exists because a library of this size can produce hundreds of groups and per-group approval alone would be unusable. It is explicit, scoped to a tier, and prints a summary needing confirmation before it commits. `--yes` is accepted for scripted use and is the only way to bypass the prompt.
@@ -473,16 +473,16 @@ Invariants, stated as invariants rather than as a claim about which syscalls app
 2. **Nothing is ever overwritten**, on move or on undo.
 3. **Every move is verified against freshly read bytes**, not cached database state.
 
-Mechanism: `os.link(src, dst)` then remove the source. `os.link` fails atomically if the destination exists, and fails with `EXDEV` across filesystems — which is the point. A cross-device `shutil.move` silently degrades to copy-then-delete, so a quarantine directory lives **on each filesystem** (`<root>/.audiolib-quarantine/`), and a library spread over several drives is handled rather than refused. These directories are excluded from scanning.
+Mechanism: `os.link(src, dst)` then remove the source. `os.link` fails atomically if the destination exists, and fails with `EXDEV` across filesystems — which is the point. A cross-device `shutil.move` silently degrades to copy-then-delete, so a quarantine directory lives **on each filesystem** (`<root>/.riffle-quarantine/`), and a library spread over several drives is handled rather than refused. These directories are excluded from scanning.
 
-`audiolib apply <run-id>` proceeds per approved group:
+`riffle apply <run-id>` proceeds per approved group:
 
 1. Fresh-hash the **keeper** from disk first. If it is missing or its hash differs from the run snapshot, **skip the entire group** and warn. Moving losers when the keeper has vanished would leave no copies at all.
 2. For each proposed loser, fresh-hash from disk and compare against `run_track`. The scan's `(path, size, mtime)` fast path is a cache shortcut and is not trusted for a destructive-ish action.
 3. Link into quarantine, verify the destination hash, then unlink the source.
 4. Record `src_hash`, `dst_hash`, and a per-file `state`; mark the track `present = 0, absent_reason = 'quarantined'`. A partial failure leaves the run in an explicit state, not an ambiguous one.
 
-`audiolib undo <run-id>` restores from the manifest and refuses to overwrite any path that has appeared since the move.
+`riffle undo <run-id>` restores from the manifest and refuses to overwrite any path that has appeared since the move.
 
 ## Enrichment
 
@@ -507,15 +507,15 @@ MusicBrainz is contacted only when genre tags are needed, at 1 request/second, w
 ## CLI
 
 ```
-audiolib scan <dirs> [--verify-hashes] [--retry-errors]
-audiolib match
-audiolib report [--run N] [--tier N]
-audiolib approve --run N (--group G | --tier T --all) [--yes]
-audiolib reject  --run N --group G
-audiolib apply   --run N
-audiolib undo    --run N
-audiolib enrich
-audiolib calibrate <pairs-file>
+riffle scan <dirs> [--verify-hashes] [--retry-errors]
+riffle match
+riffle report [--run N] [--tier N]
+riffle approve --run N (--group G | --tier T --all) [--yes]
+riffle reject  --run N --group G
+riffle apply   --run N
+riffle undo    --run N
+riffle enrich
+riffle calibrate <pairs-file>
 ```
 
 ## Calibration

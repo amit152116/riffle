@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from audiolib import quarantine
+from riffle import quarantine
 from tests.test_quarantine import _fixture
 
 

@@ -1,6 +1,6 @@
 import numpy as np
 
-from audiolib import match
+from riffle import match
 
 ITEM = 0.1238
 CFG = match.DEFAULT_MATCH_CONFIG

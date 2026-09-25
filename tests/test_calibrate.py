@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from audiolib import calibrate, match
+from riffle import calibrate, match
 from tests.fixtures import make_tone, transcode, trim
 
 

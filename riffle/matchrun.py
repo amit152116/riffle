@@ -6,8 +6,8 @@ from datetime import datetime, timezone
 
 import numpy as np
 
-import audiolib
-from audiolib import fingerprint, match, store
+import riffle
+from riffle import fingerprint, match, store
 
 
 def load_fingerprints(conn) -> dict[int, np.ndarray]:
@@ -32,7 +32,7 @@ def run_match(conn, config: dict = match.DEFAULT_MATCH_CONFIG) -> int:
         (now,
          json.dumps(fingerprint.DEFAULT_CONFIG, sort_keys=True),
          json.dumps(config, sort_keys=True),
-         audiolib.__version__),
+         riffle.__version__),
     )
     run_id = cur.lastrowid
 

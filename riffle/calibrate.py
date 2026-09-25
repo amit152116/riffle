@@ -11,7 +11,7 @@ import json
 from collections import Counter
 from pathlib import Path
 
-from audiolib import fingerprint, match
+from riffle import fingerprint, match
 
 REQUIRED_EXPECTATIONS = {0, 1, 2}
 REQUIRED_SETS = {"calibrate", "holdout"}

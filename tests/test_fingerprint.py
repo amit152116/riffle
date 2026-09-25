@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from audiolib import fingerprint, scan, store
+from riffle import fingerprint, scan, store
 from tests.fixtures import make_tone, transcode
 
 

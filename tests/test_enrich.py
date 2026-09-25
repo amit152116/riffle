@@ -4,7 +4,7 @@ import time
 import numpy as np
 import pytest
 
-from audiolib import enrich, fingerprint, store
+from riffle import enrich, fingerprint, store
 
 
 def _content_with_fp(conn, tmp_path, n_items=2000, cid=1, file_seconds=5.0):
@@ -171,7 +171,7 @@ def test_lookup_fingerprint_prefers_the_fast_derived_slice_when_valid(tmp_path):
     # passes). The fast path -- slice the in-memory canonical array and
     # re-encode -- must be preferred whenever it is valid: no file access,
     # no dedicated artifact row.
-    from audiolib import scan
+    from riffle import scan
     from tests.fixtures import make_tone
 
     lib = tmp_path / "lib"
@@ -209,7 +209,7 @@ def test_lookup_fingerprint_falls_back_to_a_dedicated_artifact(monkeypatch,
     # algorithm where slicing is genuinely not prefix-compatible.
     monkeypatch.setattr(enrich, "_prefix_slicing_is_valid", lambda: False)
 
-    from audiolib import scan
+    from riffle import scan
     from tests.fixtures import make_tone
 
     lib = tmp_path / "lib"

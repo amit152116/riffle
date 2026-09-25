@@ -1,6 +1,6 @@
 import numpy as np
 
-from audiolib import match
+from riffle import match
 
 
 def _fp(values):

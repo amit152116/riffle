@@ -1,4 +1,4 @@
-from audiolib import fingerprint, group, matchrun, scan, store
+from riffle import fingerprint, group, matchrun, scan, store
 from tests.fixtures import make_tone, transcode
 
 

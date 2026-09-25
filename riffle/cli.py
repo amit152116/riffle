@@ -7,7 +7,7 @@ from pathlib import Path
 
 import typer
 
-from audiolib import (approve as approve_mod, fingerprint, group, matchrun,
+from riffle import (approve as approve_mod, fingerprint, group, matchrun,
                       quarantine, rank, report as report_mod, scan as scan_mod,
                       store)
 
@@ -16,7 +16,7 @@ _state: dict = {}
 
 
 @app.callback()
-def main(db: str = typer.Option("audiolib.sqlite", help="Database path")):
+def main(db: str = typer.Option("riffle.sqlite", help="Database path")):
     _state["db"] = Path(db)
 
 
@@ -26,7 +26,7 @@ def _session():
     release both -- a single OS process naturally releases the lock on exit,
     but a persistent process (the test suite's CliRunner, or any in-process
     caller) does not, and would otherwise wrongly refuse every later call in
-    the same process as "another audiolib process holds" its own prior lock.
+    the same process as "another riffle process holds" its own prior lock.
     """
     db = _state["db"]
     try:
@@ -127,7 +127,7 @@ def undo(run: int = typer.Option(..., "--run")):
 
 @app.command()
 def enrich(api_key: str = typer.Option(..., envvar="ACOUSTID_API_KEY")):
-    from audiolib import enrich as enrich_mod
+    from riffle import enrich as enrich_mod
 
     with _session() as conn:
         result = enrich_mod.enrich(conn, api_key)
@@ -137,8 +137,8 @@ def enrich(api_key: str = typer.Option(..., envvar="ACOUSTID_API_KEY")):
 
 @app.command()
 def calibrate(pairs_file: str):
-    from audiolib import calibrate as cal_mod
-    from audiolib import match as match_mod
+    from riffle import calibrate as cal_mod
+    from riffle import match as match_mod
 
     entries = cal_mod.load_pairs(Path(pairs_file))
     best, scores = cal_mod.search(entries, match_mod.DEFAULT_MATCH_CONFIG)
