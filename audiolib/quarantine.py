@@ -124,3 +124,39 @@ def apply_run(conn, run_id: int, roots: list[Path]) -> dict:
 
     return {"moved": moved, "failed": failed,
             "skipped_groups": skipped_groups}
+
+
+def undo_run(conn, run_id: int) -> dict:
+    """Restore quarantined files, refusing to overwrite anything."""
+    restored = refused = 0
+    rows = conn.execute(
+        "SELECT * FROM quarantine_log WHERE run_id = ? AND state = 'moved' "
+        "ORDER BY id", (run_id,)).fetchall()
+
+    for row in rows:
+        src = Path(row["dst_path"])
+        dst = Path(row["src_path"])
+        if not src.exists():
+            continue
+        if dst.exists():  # invariant 2: never overwrite
+            refused += 1
+            continue
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            os.link(src, dst)
+            os.unlink(src)
+        except OSError:
+            refused += 1
+            continue
+
+        conn.execute("UPDATE quarantine_log SET state = 'undone' WHERE id = ?",
+                     (row["id"],))
+        conn.execute(
+            "UPDATE track SET present = 1, absent_reason = NULL WHERE id = ?",
+            (row["track_id"],))
+        conn.execute(
+            "UPDATE dup_group SET decision = 'approved' WHERE id = ?",
+            (row["group_id"],))
+        restored += 1
+
+    return {"restored": restored, "refused": refused}
