@@ -32,8 +32,10 @@ def test_effective_k_cap_scales_with_the_corpus():
     # Target scale: the fraction binds, so the cap tracks the library.
     assert match.effective_k_cap(cfg, 5_000) == 100
     assert match.effective_k_cap(cfg, 2_000) == 40
-    # Tiny corpus: never below two, the smallest list that yields a pair.
-    assert match.effective_k_cap(cfg, 3) == 2
+    # Tiny corpus: floor of 20, not the fraction's near-zero value. A lower
+    # floor would drop any key shared by 3+ fingerprints outright, breaking
+    # detection of a realistic N-way duplicate cluster at small scale.
+    assert match.effective_k_cap(cfg, 3) == 20
 
 
 def test_occurrence_cap_limits_positions_within_one_fingerprint():

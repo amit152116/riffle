@@ -43,11 +43,23 @@ def effective_k_cap(config: dict, n_fingerprints: int) -> int:
     The absolute term bounds cost, since O(n^2) pair emission depends on the
     count. The fractional term bounds informativeness: a key present in
     several percent of the library distinguishes nothing, and a purely
-    absolute cap grows more permissive as the library shrinks. The floor of
-    two is the smallest posting list that can yield a pair at all.
+    absolute cap grows more permissive as the library shrinks.
+
+    The floor is 20, not 2, and it raises the fractional term before the
+    absolute term clamps it -- never the other way around. A floor of 2 can
+    only ever recognise a *pair*: any key shared by three or more
+    fingerprints is dropped outright the moment it exceeds the floor, which
+    silently breaks detection of a realistic N-way duplicate cluster
+    (several rips of the same song) at small corpus sizes. 20 comfortably
+    covers that case while staying far below the fractional term once it
+    takes over (n_fingerprints > 1000 at the default 0.02), so
+    production-scale behaviour is unchanged. Applying the floor to the
+    fractional term rather than to the final result also means an explicit,
+    smaller `k_cap` still wins: the absolute term is a ceiling the floor
+    must never push past.
     """
     fractional = int(config["k_cap_fraction"] * n_fingerprints)
-    return max(2, min(config["k_cap"], fractional))
+    return min(config["k_cap"], max(20, fractional))
 
 
 def candidate_key(items: np.ndarray, align_bits: int) -> np.ndarray:
