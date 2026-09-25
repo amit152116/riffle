@@ -64,6 +64,7 @@ def trim(src: Path, dst: Path, start: float,
 
 
 def concat(dst: Path, *srcs: Path) -> Path:
+    dst.parent.mkdir(parents=True, exist_ok=True)
     listing = dst.with_suffix(".txt")
     listing.write_text("".join(f"file '{s.resolve()}'\n" for s in srcs))
     _run(["-f", "concat", "-safe", "0", "-i", str(listing),
