@@ -6,7 +6,7 @@ Scope: Base layer + Subsystem A (dedup). Subsystems B (features/collections) and
 
 ## Context
 
-The goal is a local music library analyzer for a personal collection of roughly 2,000–20,000 files, serving three eventual use cases:
+The goal is a local music library analyzer for a personal collection of roughly 2,000–5,000 files, serving three eventual use cases:
 
 1. Remove duplicate songs from collected music files.
 2. Sort and build collections by musical features or genre.
@@ -28,7 +28,7 @@ Confirmed with the user:
 |---|---|
 | Fingerprint engine | Chromaprint (`fpcalc`), not hand-built landmark hashing |
 | Language | Python |
-| Library size | 2,000–20,000 files |
+| Library size | 2,000–5,000 files |
 | Duplicate definition | Same recording **and** near-variants (radio edits, trimmed intros, different masters) |
 | Keeper selection | Auto-ranked, **user confirms**; losers quarantined, never deleted |
 | Network | AcoustID/MusicBrainz lookups allowed, cached locally |
@@ -374,7 +374,9 @@ Quarantining sets `present = 0` with `absent_reason = 'quarantined'`, distinguis
 
 `fpcalc -raw -length 0` — full-length, explicitly. The 120-second default would make every trim, edit, or partial overlap past the two-minute mark invisible, which is precisely what this tool must catch.
 
-Output is decoded to a `numpy.uint32` array and stored per the serialization rule. At about 8 items/second a four-minute track is roughly 2,000 values (~8 KB); 20,000 tracks is on the order of 160 MB.
+Output is decoded to a `numpy.uint32` array and stored per the serialization rule. At about 8 items/second a four-minute track is roughly 2,000 values (~8 KB); 5,000 tracks is on the order of 40 MB.
+
+**The first scan is a long one-time job.** Fingerprinting decodes every file, so 5,000 tracks is on the order of an hour or two. Each fingerprint is committed as it is produced, so an interrupted scan resumes where it stopped rather than starting over, and later scans fingerprint only what is new.
 
 `analyzer_version` and `config_hash` are recorded so a Chromaprint upgrade or config change invalidates fingerprints deterministically rather than silently mixing incompatible data.
 
@@ -391,6 +393,8 @@ The index is built transiently in numpy per run and is **not persisted**; a post
 Keys are generated for every fingerprint, sorted with `argsort`, and equal keys grouped into posting lists. Two caps bound the work, both in `match_config`:
 
 - **`K` — stop-key cap across fingerprints.** Silence, fades, and common patterns produce identical keys across thousands of tracks. Pair emission from a posting list is O(n²), so one such key alone would generate millions of spurious candidates with a false offset spike near zero. Posting lists covering more than `K` fingerprints are dropped.
+
+  `K` is `min(k_cap, k_cap_fraction × number_of_fingerprints)`. The absolute term bounds cost, which is what O(n²) emission depends on. The fractional term bounds informativeness: a key present in several percent of the library distinguishes nothing, and a cap fixed in absolute terms grows steadily more permissive as the library shrinks. Both are calibrated.
 - **`M` — occurrence cap within one fingerprint per key.** A key repeating at many positions inside a single track produces a Cartesian product of δ values for every pair it joins. At most `M` positions per fingerprint per key are carried, chosen deterministically (first `M` by position).
 
 ### Offset voting and segmentation
@@ -409,7 +413,9 @@ Evidence recorded per pair:
 
 ### Memory envelope
 
-Raw fingerprint data is roughly 160 MB at 20,000 tracks; index and position arrays put expected peak usage near 1 GB. If the library outgrows that, the fallback partitions the key space into buckets and processes one at a time, accumulating pair evidence across buckets — identical results, lower peak memory.
+Raw fingerprint data is roughly 40 MB at 5,000 tracks; index and position arrays put expected peak usage near 250 MB. The bucketed fallback — partition the key space, process one bucket at a time, accumulate pair evidence across buckets for identical results — is documented in case the library grows by an order of magnitude, but it is not expected to be needed at this scale.
+
+**The index is still required at this scale.** Five thousand tracks is about 12.5 million pairs, so brute-force pairwise alignment would take tens of minutes at the most optimistic per-pair cost and hours in practice. The index exists to avoid that count, not to save memory, and the smaller library does not make it optional.
 
 ## Grouping
 
@@ -565,7 +571,7 @@ Three decisions are recorded here for the specs that will implement them, so the
 
 - **B is not one embedding.** "Same genre" and "sounds similar" are different questions. The analysis layer produces several reusable representations — embedding, tempo, key, loudness, genre and mood probabilities — and the collection engine filters, classifies, clusters and searches over them. Genre must not be forced to emerge from nearest-neighbour similarity alone.
 - **C is not nearest-neighbour lookup.** "What sounds similar?" is not "what should play next?". A track's nearest neighbours are often near-identical takes of it. C needs its own candidate generation, ranking, recent-play and repetition penalties, session diversity, and history — reusing B's representations, not B's logic.
-- **Vector search is a derived index, and probably not needed at first.** At 20k tracks an exact flat search over float32 vectors is a single matrix product of a few tens of MB, which runs in milliseconds; an ANN index such as FAISS HNSW earns its complexity only once that stops being true. Spec B verifies this against real timings rather than assuming either way.
+- **Vector search is a derived index, and almost certainly not needed.** At 5,000 tracks an exact flat search over float32 vectors is a single matrix product of roughly 10 MB, which runs in milliseconds; an ANN index such as FAISS HNSW earns its complexity only once that stops being true, which will not happen at this scale. Spec B confirms this against real timings rather than assuming either way.
 
 Recorded so the Python pin does not block that work later: `essentia-tensorflow` release `2.1b6.dev1438` (2026-05-19) ships **cp314 wheels only**, while `2.1b6.dev1389` (2025-07-24) covers cp39–cp313. With Python pinned at 3.12, subsystem B would use `2.1b6.dev1389`.
 

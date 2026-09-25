@@ -1569,7 +1569,8 @@ git commit -m "feat: full-length chromaprint fingerprinting with versioned artif
 **Interfaces:**
 - Consumes: nothing from earlier tasks at runtime.
 - Produces:
-  - `DEFAULT_MATCH_CONFIG: dict` — `{"align_bits": 12, "k_cap": 200, "m_cap": 8, "match_threshold": 10.0, "sigma": 8.0, "gradient_peak": 0.15, "merge_delta": 0.7, "min_peak_vote_ratio": 0.05, "tier1_min_coverage": 0.85, "tier1_max_bit_error": 6.0, "tier1_min_overlap_seconds": 20.0, "tier2_min_overlap_seconds": 15.0}`
+  - `DEFAULT_MATCH_CONFIG: dict` — `{"align_bits": 12, "k_cap": 200, "k_cap_fraction": 0.02, "m_cap": 8, "match_threshold": 10.0, "sigma": 8.0, "gradient_peak": 0.15, "merge_delta": 0.7, "min_peak_vote_ratio": 0.05, "tier1_min_coverage": 0.85, "tier1_max_bit_error": 6.0, "tier1_min_overlap_seconds": 20.0, "tier2_min_overlap_seconds": 15.0}`
+  - `effective_k_cap(config: dict, n_fingerprints: int) -> int`
   - `candidate_key(items: np.ndarray, align_bits: int) -> np.ndarray`
   - `build_postings(fps: dict[int, np.ndarray], config: dict) -> dict[int, list[tuple[int, int]]]` — key to list of `(content_id, position)`, both caps applied
   - `candidate_pairs(postings) -> set[tuple[int, int]]` — ordered `(a, b)` with `a < b`
@@ -1603,6 +1604,17 @@ def test_stop_key_cap_drops_ubiquitous_keys():
     fps = {i: np.array([0x00100000], dtype=np.uint32) for i in range(1, 6)}
     postings = match.build_postings(fps, cfg)
     assert 0x001 not in postings
+
+
+def test_effective_k_cap_scales_with_the_corpus():
+    cfg = dict(match.DEFAULT_MATCH_CONFIG, k_cap=200, k_cap_fraction=0.02)
+    # Large corpus: the absolute cap binds.
+    assert match.effective_k_cap(cfg, 50_000) == 200
+    # Target scale: the fraction binds, so the cap tracks the library.
+    assert match.effective_k_cap(cfg, 5_000) == 100
+    assert match.effective_k_cap(cfg, 2_000) == 40
+    # Tiny corpus: never below two, the smallest list that yields a pair.
+    assert match.effective_k_cap(cfg, 3) == 2
 
 
 def test_occurrence_cap_limits_positions_within_one_fingerprint():
@@ -1663,6 +1675,7 @@ import numpy as np
 DEFAULT_MATCH_CONFIG = {
     "align_bits": 12,
     "k_cap": 200,
+    "k_cap_fraction": 0.02,
     "m_cap": 8,
     "match_threshold": 10.0,
     "sigma": 8.0,
@@ -1674,6 +1687,19 @@ DEFAULT_MATCH_CONFIG = {
     "tier1_min_overlap_seconds": 20.0,
     "tier2_min_overlap_seconds": 15.0,
 }
+
+
+def effective_k_cap(config: dict, n_fingerprints: int) -> int:
+    """Stop-key cap, bounded both absolutely and as a share of the corpus.
+
+    The absolute term bounds cost, since O(n^2) pair emission depends on the
+    count. The fractional term bounds informativeness: a key present in
+    several percent of the library distinguishes nothing, and a purely
+    absolute cap grows more permissive as the library shrinks. The floor of
+    two is the smallest posting list that can yield a pair at all.
+    """
+    fractional = int(config["k_cap_fraction"] * n_fingerprints)
+    return max(2, min(config["k_cap"], fractional))
 
 
 def candidate_key(items: np.ndarray, align_bits: int) -> np.ndarray:
@@ -1693,7 +1719,7 @@ def build_postings(fps: dict[int, np.ndarray], config: dict) -> dict:
     """
     align_bits = config["align_bits"]
     m_cap = config["m_cap"]
-    k_cap = config["k_cap"]
+    k_cap = effective_k_cap(config, len(fps))
 
     postings: dict[int, list[tuple[int, int]]] = defaultdict(list)
     for content_id in sorted(fps):
@@ -4553,9 +4579,13 @@ def test_common_keys_do_not_explode_the_candidate_set(tmp_path):
     fingerprint.fingerprint_pending(conn)
 
     fps = matchrun.load_fingerprints(conn)
-    capped = match.build_postings(fps, match.DEFAULT_MATCH_CONFIG)
+    # Pin the caps rather than inheriting them: with only 12 fixtures the
+    # fractional term would floor to 2 and the test would be exercising the
+    # floor instead of the caps it exists to check.
+    cfg = dict(match.DEFAULT_MATCH_CONFIG, k_cap=4, k_cap_fraction=1.0)
+    capped = match.build_postings(fps, cfg)
     uncapped = match.build_postings(
-        fps, dict(match.DEFAULT_MATCH_CONFIG, k_cap=10 ** 9, m_cap=10 ** 9))
+        fps, dict(cfg, k_cap=10 ** 9, k_cap_fraction=10 ** 9, m_cap=10 ** 9))
 
     assert sum(len(v) for v in capped.values()) < \
            sum(len(v) for v in uncapped.values())
