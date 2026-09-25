@@ -12,7 +12,7 @@ The goal is a local music library analyzer for a personal collection of roughly 
 2. Sort and build collections by musical features or genre.
 3. Shuffle better, and recommend the next track from what has been played.
 
-These are three subsystems over one shared base. This spec covers the base and use case 1 only. Use cases 2 and 3 share a single embedding pipeline and are deliberately deferred so their storage layout is decided when their model is chosen, not guessed at now.
+These are three subsystems over one shared base. This spec covers the base and use case 1 only. Use cases 2 and 3 share a versioned audio-analysis pipeline and may reuse the same embedding representations, but each owns its application-specific derived features and ranking logic. They are deliberately deferred so their storage layout is decided when their models are chosen, not guessed at now.
 
 The original framing was "like Shazam". Shazam's landmark-hashing algorithm is built to match a short, noisy microphone clip against a database. Deduplicating whole clean files in a local library is a different problem, and Chromaprint/AcoustID is the tool built for it. Using Chromaprint rather than hand-building a Wang-style engine was decided explicitly.
 
@@ -131,6 +131,43 @@ The implementation is therefore semantically equivalent for ordinary inputs and 
 
 **The masking rationale is also corrected.** An earlier draft argued that low-order bits are most disturbed by re-encoding. Chromaprint items are classifier outputs, not magnitudes, so that reasoning does not hold and is removed. Upstream keeps the **top** 12 bits; that is the default here, configurable and calibrated.
 
+## Layering
+
+This spec defines the base that subsystems B and C build on, so the layer boundaries are fixed here even though only layers 0, 1 and 3-A are implemented now.
+
+```
+L0  LIBRARY      filesystem, track identity, audio identity, metadata, scan state
+L1  ANALYSIS     Chromaprint today; embeddings, descriptors, classifiers later.
+                 Every artifact versioned and cached.
+L2  DERIVED      dedup candidate index (transient), vector index, clusters,
+                 play history, session state
+L3  APPLICATION  A dedup | B collections | C recommender
+```
+
+### The analysis-artifact convention
+
+`fingerprint` is the first instance of a pattern every later analyzer follows. An artifact is identified by:
+
+```
+(audio_content_id, analyzer, analyzer_version, config_hash)
+```
+
+with a uniqueness constraint over those columns. That is what gives deterministic invalidation: change the model or the configuration and the old artifact is superseded rather than silently mixed with the new one.
+
+**Each analyzer keeps its own typed table** — `fingerprint` now, `embedding`, `descriptor`, `classifier_output` later. They are not collapsed into one generic artifact table. A fingerprint is a `uint32` array with an element count; an embedding is a `float32` vector of fixed dimension; a classifier output is a label-to-probability map. Forcing those into one BLOB-plus-JSON row would lose the type invariants this spec asserts on read and write, and would make every query worse. The convention is the shared part; the storage is not.
+
+### What is shared, and what is not
+
+Shared across subsystems: track identity, audio-content identity, metadata, analysis artifacts, model and version information, extraction caches.
+
+Owned by exactly one subsystem and never read by another: the dedup candidate index, pair evidence, grouping rules, keeper ranking, and quarantine state belong to A. Collection definitions and clusters will belong to B. Play history, session state, scoring, and diversity logic will belong to C.
+
+This is why dedup's index is transient and its own: it must not become a dependency of the future embedding system. Layer 2 holds derived state, and derived state may be discarded and rebuilt.
+
+### SQLite stays the source of truth
+
+At this scale SQLite is sufficient for tracks, content, artifacts, collections, and history. Any vector index is a **derived** artifact, rebuilt when embeddings change, never the authority. No second datastore is introduced.
+
 ## Architecture
 
 Python 3.12, environment via `uv`, CLI via `typer`. Each module has one responsibility and is testable in isolation.
@@ -191,14 +228,15 @@ Everything downstream references `audio_content.id`, never the hash string, so n
 fingerprint
   id                   INTEGER PRIMARY KEY
   audio_content_id     INTEGER REFERENCES audio_content(id)
+  analyzer             TEXT NOT NULL      -- 'chromaprint'
+  analyzer_version     TEXT NOT NULL      -- captured `fpcalc -version`
   purpose              TEXT NOT NULL      -- canonical | acoustid_lookup
   algorithm            INTEGER
-  tool_version         TEXT               -- captured `fpcalc -version`
   config_hash          TEXT
   fp_raw               BLOB
   fp_length            INTEGER            -- element count
   computed_at          TEXT
-  UNIQUE (audio_content_id, purpose, algorithm, tool_version, config_hash)
+  UNIQUE (audio_content_id, analyzer, analyzer_version, config_hash, purpose, algorithm)
 
 scan_run
   id                   INTEGER PRIMARY KEY
@@ -312,7 +350,7 @@ Every scan opens a `scan_run` recording its roots.
 3. Fast path: if `(path, size, mtime)` is unchanged, reuse the stored `audio_content_id` and skip re-hashing. `--verify-hashes` forces re-hashing — the escape hatch for contents changing without size or mtime changing.
 4. Otherwise compute the audio-stream hash and attach the track to its `audio_content` row, creating it if new.
 5. Read tags and stream properties with `mutagen`; compute `tag_completeness`.
-6. Fingerprint only content rows lacking a `canonical` fingerprint, or whose `tool_version` / `config_hash` no longer match current configuration.
+6. Fingerprint only content rows lacking a `canonical` fingerprint, or whose `analyzer_version` / `config_hash` no longer match current configuration.
 7. Set `last_seen_scan_id` and `present = 1` for every track seen.
 
 ### Presence and disappearance
@@ -338,7 +376,7 @@ Quarantining sets `present = 0` with `absent_reason = 'quarantined'`, distinguis
 
 Output is decoded to a `numpy.uint32` array and stored per the serialization rule. At about 8 items/second a four-minute track is roughly 2,000 values (~8 KB); 20,000 tracks is on the order of 160 MB.
 
-`tool_version` and `config_hash` are recorded so a Chromaprint upgrade or config change invalidates fingerprints deterministically rather than silently mixing incompatible data.
+`analyzer_version` and `config_hash` are recorded so a Chromaprint upgrade or config change invalidates fingerprints deterministically rather than silently mixing incompatible data.
 
 ## Matching
 
@@ -521,7 +559,13 @@ Stress test for candidate explosion, the reason the caps exist: a fixture with l
 
 ## Out of scope
 
-Embeddings, genre classification, clustering, shuffle, recommendation, playback integration. No feature-vector column, because the embedding dimensions depend on a model not yet chosen. Schema versioning is in place so those tables arrive without migration pain.
+Embeddings, genre classification, clustering, shuffle, recommendation, playback integration. No feature-vector column, because the embedding dimensions depend on a model not yet chosen. Schema versioning and the analysis-artifact convention are in place so those tables arrive without migration pain.
+
+Three decisions are recorded here for the specs that will implement them, so they are not re-litigated later:
+
+- **B is not one embedding.** "Same genre" and "sounds similar" are different questions. The analysis layer produces several reusable representations — embedding, tempo, key, loudness, genre and mood probabilities — and the collection engine filters, classifies, clusters and searches over them. Genre must not be forced to emerge from nearest-neighbour similarity alone.
+- **C is not nearest-neighbour lookup.** "What sounds similar?" is not "what should play next?". A track's nearest neighbours are often near-identical takes of it. C needs its own candidate generation, ranking, recent-play and repetition penalties, session diversity, and history — reusing B's representations, not B's logic.
+- **Vector search is a derived index, and probably not needed at first.** At 20k tracks an exact flat search over float32 vectors is a single matrix product of a few tens of MB, which runs in milliseconds; an ANN index such as FAISS HNSW earns its complexity only once that stops being true. Spec B verifies this against real timings rather than assuming either way.
 
 Recorded so the Python pin does not block that work later: `essentia-tensorflow` release `2.1b6.dev1438` (2026-05-19) ships **cp314 wheels only**, while `2.1b6.dev1389` (2025-07-24) covers cp39–cp313. With Python pinned at 3.12, subsystem B would use `2.1b6.dev1389`.
 
