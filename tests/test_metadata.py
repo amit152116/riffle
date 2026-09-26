@@ -226,3 +226,32 @@ def test_cli_metadata_as_json_emits_valid_json(tmp_path):
     assert result.exit_code == 0
     data = json.loads(result.stdout)
     assert data["parsed"] == 1
+
+
+def test_parse_all_writes_normalized_artist_tables(tmp_path):
+    conn = store.connect(tmp_path / "db.sqlite")
+    _insert_cache_row(conn, 1, SAMPLE_RESPONSE)
+    from riffle import metadata
+    metadata.parse_all(conn)
+    artists = {r["mbid"]: r["name"] for r in conn.execute("SELECT * FROM mb_artist")}
+    assert artists["art-001"] == "A.R. Rahman"
+    assert artists["art-002"] == "Chinmayi"
+
+
+def test_render_metadata_credits_each_collaborator_individually(tmp_path):
+    """Before normalization, GROUP BY artists_json credited a collab track
+    only as the whole ensemble string ('A.R. Rahman, Chinmayi'). After, each
+    artist must appear on its own line. A plain substring check for each
+    name doesn't discriminate old vs. new behavior -- the old ensemble
+    string already contains both names as substrings -- so this asserts on
+    each name having its own line, and the combined ensemble string being
+    absent."""
+    conn = store.connect(tmp_path / "db.sqlite")
+    _insert_cache_row(conn, 1, SAMPLE_RESPONSE)
+    from riffle import metadata
+    metadata.parse_all(conn)
+    text = metadata.render_metadata(conn)
+    lines = text.splitlines()
+    assert any(line.strip().startswith("A.R. Rahman") for line in lines)
+    assert any(line.strip().startswith("Chinmayi") for line in lines)
+    assert not any("A.R. Rahman, Chinmayi" in line for line in lines)

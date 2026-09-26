@@ -12,12 +12,22 @@ Every finding below was verified by tracing the actual read/write path through t
 
 This is a live database with a real user's ~770-track library. No destructive changes; Migration 7 is additive/rebuild-in-place only.
 
-**Migration mechanics — this one can't be a plain SQL string.** Every prior migration (`_MIGRATION_1` .. `_MIGRATION_6`) is a SQL string run through `conn.executescript(sql)`. Migration 7 can't follow that pattern for two reasons, both found during spec self-review, not assumed:
+**Migration mechanics — this one can't be a plain SQL string, and can't use `executescript()` at all.** Every prior migration (`_MIGRATION_1` .. `_MIGRATION_6`) is a SQL string run through `conn.executescript(sql)`. Migration 7 needs a genuinely different mechanism — two real bugs were found in an earlier draft of this section during external review and confirmed empirically (not just from documentation) before being fixed here:
 
-1. `PRAGMA foreign_keys` is a documented no-op when changed while a transaction is active — the OFF/ON toggle around the four rebuilds has to happen *outside* any `BEGIN`/`COMMIT`, which `executescript()`'s single call can't sequence against Python-level logic.
-2. `PRAGMA foreign_key_check` returns violation rows like a query — but `executescript()` discards all results. Putting it inside a script means any violation is silently thrown away, not caught. To actually inspect the result and decide whether to roll back, it has to run through `conn.execute(...).fetchall()`.
+1. **`executescript()` cannot run inside a manually-controlled transaction, in either order.** Python's `sqlite3.Connection.executescript()` unconditionally commits any pending transaction before running its own statements, then runs those statements with no transaction wrapping of its own. Verified directly in this environment:
+   ```python
+   conn.execute("BEGIN")
+   conn.execute("INSERT INTO t VALUES (1)")
+   conn.executescript("INSERT INTO t VALUES (2); INSERT INTO t VALUES (3);")
+   print(conn.in_transaction)  # False -- executescript already committed everything
+   ```
+   `conn.in_transaction` is `False` immediately after the `executescript()` call, and all three rows are permanently committed with nothing left to roll back. An earlier draft of this migration wrapped `_MIGRATION_7_DDL` in `BEGIN` ... `executescript(...)` ... `COMMIT`, which does not work — the DDL runs fully autocommitted the moment `executescript()` is called, defeating the atomicity this whole section exists to provide. **`_MIGRATION_7` therefore executes every statement individually via `conn.execute(stmt)` in a loop, never `executescript()`.**
+2. `PRAGMA foreign_keys` is a documented no-op when changed while a transaction is active — the OFF/ON toggle around the four rebuilds has to happen *outside* any `BEGIN`/`COMMIT`.
+3. `PRAGMA foreign_key_check` returns violation rows like a query, which only `conn.execute(...).fetchall()` can inspect — a violation inside an `executescript()` call would be silently discarded.
 
 The `artists_json` → `mb_artist`/`mb_recording_artist` backfill (§2.1) also needs Python-level JSON parsing per row, which no SQL string can do.
+
+**Second bug, also from the same review**: even with `executescript()` removed, updating `schema_version` *after* a callable migration returns (the pattern the existing loop uses for string migrations) leaves a window where the physical schema is already at v7 but `schema_version` still reads 6 — if the process dies in that window, the next `connect()` re-runs `_migration_7`, which now fails immediately (`mb_artist` already exists) instead of retrying cleanly. This gap already exists in the current framework for Migrations 1-6, but has never mattered because those are purely additive and safe to no-op or manually fix; Migration 7 is the first with `DROP TABLE` steps, where a half-applied retry is actually dangerous. **Fix: for a callable migration, the runner does not touch `schema_version` at all — the callable updates it itself, inside its own transaction, so the version bump and the schema change commit or roll back together.**
 
 So `_MIGRATIONS` is extended to accept a callable, not just a string: `list[str | Callable[[sqlite3.Connection], None]]`. The runner in `connect()` becomes:
 
@@ -25,25 +35,28 @@ So `_MIGRATIONS` is extended to accept a callable, not just a string: `list[str 
 for i, step in enumerate(_MIGRATIONS, start=1):
     if current < i:
         if callable(step):
-            step(conn)
+            step(conn)  # callable owns its own transaction AND its own schema_version update
         else:
             conn.executescript(step)
-        conn.execute("DELETE FROM schema_version")
-        conn.execute("INSERT INTO schema_version (version) VALUES (?)", (i,))
+            conn.execute("DELETE FROM schema_version")
+            conn.execute("INSERT INTO schema_version (version) VALUES (?)", (i,))
 ```
 
-Migration 7 is one callable, `_migration_7(conn)`, doing exactly what SQLite's own documented 12-step procedure prescribes, in order:
+String-based migrations (1-6) are untouched — same behavior as today, no risk to them. Migration 7 is one callable, `_migration_7(conn)`:
 
 ```python
 def _migration_7(conn):
     conn.execute("PRAGMA foreign_keys=OFF")
     try:
         conn.execute("BEGIN")
-        conn.executescript(_MIGRATION_7_DDL)   # new tables, indexes, DROP COLUMN, all 4 rebuilds -- see below
+        for stmt in _MIGRATION_7_STATEMENTS:   # list of individual statements -- see below
+            conn.execute(stmt)
         _backfill_mb_artists(conn)             # Python: parse artists_json, populate mb_artist/mb_recording_artist
         violations = conn.execute("PRAGMA foreign_key_check").fetchall()
         if violations:
             raise RuntimeError(f"Migration 7 left {len(violations)} dangling reference(s): {violations}")
+        conn.execute("DELETE FROM schema_version")
+        conn.execute("INSERT INTO schema_version (version) VALUES (7)")
         conn.execute("COMMIT")
     except Exception:
         conn.execute("ROLLBACK")
@@ -52,9 +65,9 @@ def _migration_7(conn):
         conn.execute("PRAGMA foreign_keys=ON")
 ```
 
-`BEGIN` is inside the `try`, not before it — so `finally`'s re-enable always runs even in the (vanishingly unlikely) case `BEGIN` itself fails, not just when the DDL/backfill/check fails.
+`BEGIN` is inside the `try`, not before it — so `finally`'s re-enable always runs even in the (vanishingly unlikely) case `BEGIN` itself fails, not just when the DDL/backfill/check fails. The `schema_version` update is now *inside* the same `try`, before `COMMIT` — it lands with everything else or not at all.
 
-`_MIGRATION_7_DDL` is the SQL string containing every `CREATE TABLE`, `CREATE INDEX`, `ALTER TABLE ... DROP COLUMN`, and the four rebuild sequences from §2.3 and §5 below — no `BEGIN`/`COMMIT`/`PRAGMA` statements inside it; those are all handled by `_migration_7` itself, once, around everything. `_backfill_mb_artists` uses `INSERT OR IGNORE` (for `mb_artist`, since the same artist recurs across many matches) and a plain `INSERT` guarded by the table's own `PRIMARY KEY (match_id, position)` (for `mb_recording_artist`) — both safe to re-run if `_migration_7` is retried after a rollback, since the whole function is one transaction: either every piece lands, or none does, and a retry starts from the same pre-migration state every time.
+`_MIGRATION_7_STATEMENTS` is a Python list of individual SQL statement strings — every `CREATE TABLE`, `CREATE INDEX`, `ALTER TABLE ... DROP COLUMN`, and the four rebuild sequences from §2.3 and §5 below, each its own list entry, no semicolon-joined multi-statement strings anywhere (that's what `executescript()` needs; individual `conn.execute()` calls need one statement each). `_backfill_mb_artists` uses `INSERT OR IGNORE` (for `mb_artist`, since the same artist recurs across many matches) and a plain `INSERT` guarded by the table's own `PRIMARY KEY (match_id, position)` (for `mb_recording_artist`) — both safe to re-run if `_migration_7` is retried after a rollback, since the whole function is one transaction: either every piece lands — DDL, backfill, FK check, and the version bump together — or none does, and a retry starts from the exact same pre-migration state every time.
 
 ---
 
@@ -107,7 +120,7 @@ Supported directly (SQLite 3.35+, confirmed 3.45.1 here) — no table rebuild ne
 
 **Problem, verified**: traced `scan.py:_read_tags` — `completeness` is computed in Python as `sum(1 for k in ("title","artist","album","genre") if tags[k])`, from the *same row's own* tag values, then stored as a separate `INTEGER` column written alongside them on every scan/rescan. This is a stored value that is a pure function of other columns in the same row — the textbook case for a computed column. Currently correct only because every write path remembers to recompute it; a future write path that updates a tag without recomputing completeness would silently desync it.
 
-**Fix** — requires a full rebuild of `track` (SQLite has no `ALTER COLUMN`; a stored column can't be converted to `GENERATED ALWAYS AS` in place). Part of `_MIGRATION_7_DDL` (see the migration-mechanics note in §1 for how the `PRAGMA`/transaction bracket around this and the other three rebuilds is actually sequenced):
+**Fix** — requires a full rebuild of `track` (SQLite has no `ALTER COLUMN`; a stored column can't be converted to `GENERATED ALWAYS AS` in place). Part of `_MIGRATION_7_STATEMENTS` (see the migration-mechanics note in §1 for how the `PRAGMA`/transaction bracket around this and the other three rebuilds is actually sequenced — each statement below is a separate list entry, executed individually, not one multi-statement script):
 
 ```sql
 CREATE TABLE track_new (
@@ -201,7 +214,7 @@ Documented so a future audit doesn't re-flag these:
 
 **Revised during design**: an earlier draft of this spec deferred this section, reasoning that three extra table rebuilds (`run_track`, `pair`, `quarantine_log`) were too much migration risk on a live database for a purely defensive benefit, since every write path was already traced and confirmed correct. The user clarified this riffle Python project is a first prototype informing a future Android rebuild, not a long-lived production system — the migration-risk caution that applies to a system users depend on long-term doesn't apply here in the same way. Including the rebuilds.
 
-`run_track.track_id`, `pair.a_content_id`, `pair.b_content_id`, and `quarantine_log.run_id`/`track_id`/`group_id` are `INTEGER NOT NULL` without a `REFERENCES` clause today, unlike equivalent columns elsewhere in the schema. Each requires the same rebuild pattern as §2.3 (SQLite cannot add a `REFERENCES` constraint to an existing column in place). These three rebuilds are also part of `_MIGRATION_7_DDL`, run inside the same single transaction as `track`'s rebuild — no separate `PRAGMA`/transaction handling per table:
+`run_track.track_id`, `pair.a_content_id`, `pair.b_content_id`, and `quarantine_log.run_id`/`track_id`/`group_id` are `INTEGER NOT NULL` without a `REFERENCES` clause today, unlike equivalent columns elsewhere in the schema. Each requires the same rebuild pattern as §2.3 (SQLite cannot add a `REFERENCES` constraint to an existing column in place). These three rebuilds are also part of `_MIGRATION_7_STATEMENTS`, run inside the same single transaction as `track`'s rebuild — no separate `PRAGMA`/transaction handling per table:
 
 ```sql
 CREATE TABLE run_track_new (
@@ -273,7 +286,7 @@ With this included, no separate `integrity_check` helper is needed: every FK-sha
 
 | Change | Mechanism | Rebuild required |
 |---|---|---|
-| `mb_artist`, `mb_recording_artist` + backfill | New tables (`_MIGRATION_7_DDL`) + Python backfill (`_backfill_mb_artists`) | No |
+| `mb_artist`, `mb_recording_artist` + backfill | New tables (`_MIGRATION_7_STATEMENTS`) + Python backfill (`_backfill_mb_artists`) | No |
 | Drop `group_member.audio_content_id` | `ALTER TABLE ... DROP COLUMN` | No |
 | `track.tag_completeness` → generated | Full rebuild | Yes |
 | `run_track.track_id` → `REFERENCES track(id)` | Full rebuild | Yes |
@@ -281,7 +294,7 @@ With this included, no separate `integrity_check` helper is needed: every FK-sha
 | `quarantine_log.run_id`/`track_id`/`group_id` → declared FKs | Full rebuild | Yes |
 | 6 new indexes (§3) | `CREATE INDEX` | No |
 
-Everything above runs as one atomic unit inside `_migration_7(conn)` (§1) — all four rebuilds, the new tables/indexes/column drop, and the Python backfill share a single `PRAGMA foreign_keys=OFF` / `BEGIN` / ... / `PRAGMA foreign_key_check` / `COMMIT` / `PRAGMA foreign_keys=ON` sequence. `SCHEMA_VERSION = 7`; `_MIGRATIONS` is extended to accept a callable alongside the existing SQL-string entries.
+Everything above runs as one atomic unit inside `_migration_7(conn)` (§1) — all four rebuilds, the new tables/indexes/column drop, the Python backfill, the `PRAGMA foreign_key_check` verification, and the `schema_version` update itself all commit or roll back together, inside a single `PRAGMA foreign_keys=OFF` / `BEGIN` / ... / `COMMIT` / `PRAGMA foreign_keys=ON` sequence, using individual `conn.execute()` calls throughout rather than `executescript()` (see §1 for why `executescript()` cannot be used here at all). `SCHEMA_VERSION = 7`; `_MIGRATIONS` is extended to accept a callable alongside the existing SQL-string entries, and the runner skips its own `schema_version` update for a callable step since the callable owns that itself.
 
 ## 7. Testing strategy
 
@@ -293,6 +306,8 @@ TDD per the project's existing discipline: each schema change gets a failing tes
 - `group_member` inserts/reads work identically after the column drop (existing tests, run unchanged, must stay green).
 - After the four rebuilds, every existing FK reference into `track`, `run_track`, `pair`, and `quarantine_log` still resolves — `PRAGMA foreign_key_check` returns no rows, both as an assertion inside the migration itself and as an explicit test.
 - A test that deliberately constructs an invalid reference (e.g. a `pair` row pointing at a nonexistent `audio_content_id`) via direct SQL confirms `sqlite3.IntegrityError` is now raised where it previously wasn't — proving the new FK declarations are actually enforced, not just present as documentation.
-- **Migration atomicity**: a test that monkeypatches `_backfill_mb_artists` (or another step inside `_migration_7`) to raise partway through, then confirms — on the same connection, without a second migration attempt — that `track`, `run_track`, `pair`, and `quarantine_log` are all still in their *original* (pre-Migration-7) shape (old columns present, no `_new` leftover tables, `schema_version` still reads 6), matching the atomicity-on-failure pattern already used this session for `rebuild_clusters`/`full_rebuild` (`tests/test_cluster.py::test_rebuild_clusters_is_atomic_on_failure`). A partial rebuild left on disk after a crash is exactly the failure mode this migration's transaction bracket exists to prevent — it needs its own test, not just an assumption that the `try`/`except`/`finally` in `_migration_7` works.
+- **Migration atomicity**: a test that monkeypatches `_backfill_mb_artists` (or another step inside `_migration_7`) to raise partway through, then confirms — on the same connection, without a second migration attempt — that `track`, `run_track`, `pair`, and `quarantine_log` are all still in their *original* (pre-Migration-7) shape (old columns present, no `_new` leftover tables, `schema_version` still reads 6), matching the atomicity-on-failure pattern already used this session for `rebuild_clusters`/`full_rebuild` (`tests/test_cluster.py::test_rebuild_clusters_is_atomic_on_failure`). A partial rebuild left on disk after a crash is exactly the failure mode this migration's transaction bracket exists to prevent — it needs its own test, not just an assumption that the `try`/`except`/`finally` in `_migration_7` works. Given the `executescript()` bug this spec's own §1 found and fixed by empirical test, this test is what would have caught it — it must actually run against a real connection, not just assert the code "looks" atomic.
+- **Index/trigger completeness on rebuild** (added after external review): before Migration 7, snapshot `PRAGMA index_list('track')`, `PRAGMA index_list('run_track')`, `PRAGMA index_list('pair')`, and `PRAGMA index_list('quarantine_log')` on a pre-migration DB. After migration, assert every pre-existing index name from that snapshot still exists (verified this spec's actual rebuilds already preserve everything real — `track`'s three indexes are reproduced exactly, and `run_track`/`pair`/`quarantine_log` had none beyond their own PK to begin with — but the test exists so a *future* edit to the DDL can't silently drop one without a test failing).
+- **Artist-without-MBID invariant** (added after external review): a test confirming `metadata.parse_acoustid_response` raises (or is caught and counted as `failed` by `parse_all`, never reaching `artists_json`) when an artist object in the AcoustID response is missing `id` — proving the existing `a["id"]` direct-access behavior in `metadata.py` (not a `.get("id")`) already guarantees every artist that reaches `artists_json` has an mbid, which is what makes `mb_recording_artist.artist_mbid NOT NULL` safe. This documents an invariant that already holds in the code, rather than adding new fallback logic.
 
 Full existing suite (currently 289 tests) must stay green throughout.

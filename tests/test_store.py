@@ -154,3 +154,86 @@ def test_migration_6_makes_track_similarity_directed(tmp_path):
         "SELECT count(*) c FROM track_similarity WHERE track_id = 2"
     ).fetchone()["c"]
     assert rows == 2
+
+
+def test_migration_7_runs_as_a_callable(tmp_path):
+    """Migration 7 must be a callable, not a SQL string. executescript()
+    cannot safely run inside the transaction this migration needs --
+    verified empirically: it force-commits any pending transaction before
+    running its own statements, with no transaction of its own afterward."""
+    assert callable(store._MIGRATIONS[6])
+
+
+def test_migration_7_bumps_schema_version(tmp_path):
+    conn = store.connect(tmp_path / "db.sqlite")
+    assert conn.execute(
+        "SELECT version FROM schema_version"
+    ).fetchone()["version"] == 7
+
+
+def test_migration_7_rolls_back_atomically_on_failure(tmp_path, monkeypatch):
+    """If any step inside _migration_7 raises, the whole migration --
+    including the schema_version bump -- must roll back together. A retry
+    must see the exact same pre-migration state, not a half-applied one."""
+    def _boom(conn):
+        raise RuntimeError("simulated failure")
+
+    monkeypatch.setattr(store, "_backfill_mb_artists", _boom)
+
+    db_path = tmp_path / "db.sqlite"
+    with pytest.raises(RuntimeError, match="simulated failure"):
+        store.connect(db_path)
+
+    # A raw connection (not store.connect(), which would retry migration 7
+    # and hit the same monkeypatched failure again).
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    version = conn.execute("SELECT version FROM schema_version").fetchone()["version"]
+    assert version == 6
+    tables = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "mb_artist" not in tables
+
+
+def _connect_at_v6(db_path):
+    """A raw v6 database, without running Migration 7 -- for testing
+    Migration 7 against realistic pre-existing data, not just an empty
+    freshly-created schema."""
+    conn = sqlite3.connect(db_path, isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys=ON")
+    for sql in store._MIGRATIONS[:6]:
+        conn.executescript(sql)
+    conn.execute("INSERT INTO schema_version (version) VALUES (6)")
+    return conn
+
+
+def test_migration_7_creates_mb_artist_tables(tmp_path):
+    conn = store.connect(tmp_path / "db.sqlite")
+    tables = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "mb_artist" in tables
+    assert "mb_recording_artist" in tables
+
+
+def test_migration_7_backfills_artists_from_existing_json(tmp_path):
+    db_path = tmp_path / "db.sqlite"
+    conn = _connect_at_v6(db_path)
+    conn.execute(
+        "INSERT INTO audio_content (id, audio_hash, hash_method) "
+        "VALUES (1, 'h1', 'streamhash')")
+    conn.execute(
+        "INSERT INTO musicbrainz_match (audio_content_id, artists_json) "
+        "VALUES (1, ?)",
+        ('[{"name": "A.R. Rahman", "mbid": "mbid-1"}, '
+         '{"name": "Chinmayi", "mbid": "mbid-2"}]',))
+    conn.close()
+
+    conn = store.connect(db_path)
+    artists = {r["mbid"]: r["name"] for r in conn.execute("SELECT * FROM mb_artist")}
+    assert artists == {"mbid-1": "A.R. Rahman", "mbid-2": "Chinmayi"}
+    links = conn.execute(
+        "SELECT position, artist_mbid FROM mb_recording_artist ORDER BY position"
+    ).fetchall()
+    assert [(r["position"], r["artist_mbid"]) for r in links] == [
+        (0, "mbid-1"), (1, "mbid-2")]

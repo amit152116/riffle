@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
+import json
 import sqlite3
 from pathlib import Path
 
 import numpy as np
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 class LockError(Exception):
@@ -298,8 +299,57 @@ CREATE TABLE track_similarity (
 CREATE INDEX sim_track_score ON track_similarity(track_id, combined_score);
 """
 
+_MIGRATION_7_STATEMENTS: list[str] = [
+    "CREATE TABLE mb_artist (mbid TEXT PRIMARY KEY, name TEXT NOT NULL)",
+    "CREATE TABLE mb_recording_artist ("
+    "match_id INTEGER NOT NULL REFERENCES musicbrainz_match(id), "
+    "position INTEGER NOT NULL, "
+    "artist_mbid TEXT NOT NULL REFERENCES mb_artist(mbid), "
+    "PRIMARY KEY (match_id, position))",
+    "CREATE INDEX recording_artist_mbid ON mb_recording_artist(artist_mbid)",
+]
+
+
+def _backfill_mb_artists(conn: sqlite3.Connection) -> None:
+    rows = conn.execute(
+        "SELECT id, artists_json FROM musicbrainz_match "
+        "WHERE artists_json IS NOT NULL"
+    ).fetchall()
+    for row in rows:
+        artists = json.loads(row["artists_json"])
+        for position, artist in enumerate(artists):
+            conn.execute(
+                "INSERT OR IGNORE INTO mb_artist (mbid, name) VALUES (?, ?)",
+                (artist["mbid"], artist["name"]))
+            conn.execute(
+                "INSERT INTO mb_recording_artist (match_id, position, artist_mbid) "
+                "VALUES (?, ?, ?)",
+                (row["id"], position, artist["mbid"]))
+
+
+def _migration_7(conn: sqlite3.Connection) -> None:
+    conn.execute("PRAGMA foreign_keys=OFF")
+    try:
+        conn.execute("BEGIN")
+        for stmt in _MIGRATION_7_STATEMENTS:
+            conn.execute(stmt)
+        _backfill_mb_artists(conn)
+        violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+        if violations:
+            raise RuntimeError(
+                f"Migration 7 left {len(violations)} dangling reference(s): {violations}")
+        conn.execute("DELETE FROM schema_version")
+        conn.execute("INSERT INTO schema_version (version) VALUES (7)")
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
+
+
 _MIGRATIONS = [_MIGRATION_1, _MIGRATION_2, _MIGRATION_3, _MIGRATION_4, _MIGRATION_5,
-               _MIGRATION_6]
+               _MIGRATION_6, _migration_7]
 
 
 def connect(db_path: Path) -> sqlite3.Connection:
@@ -319,11 +369,14 @@ def connect(db_path: Path) -> sqlite3.Connection:
         row = conn.execute("SELECT version FROM schema_version").fetchone()
         current = row["version"] if row else 0
 
-    for i, sql in enumerate(_MIGRATIONS, start=1):
+    for i, step in enumerate(_MIGRATIONS, start=1):
         if current < i:
-            conn.executescript(sql)
-            conn.execute("DELETE FROM schema_version")
-            conn.execute("INSERT INTO schema_version (version) VALUES (?)", (i,))
+            if callable(step):
+                step(conn)  # owns its own transaction AND schema_version update
+            else:
+                conn.executescript(step)
+                conn.execute("DELETE FROM schema_version")
+                conn.execute("INSERT INTO schema_version (version) VALUES (?)", (i,))
     return conn
 
 

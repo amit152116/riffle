@@ -90,6 +90,22 @@ def parse_all(conn) -> dict:
         )
         parsed += 1
 
+        match_id = conn.execute(
+            "SELECT id FROM musicbrainz_match WHERE audio_content_id = ?",
+            (row["audio_content_id"],)
+        ).fetchone()["id"]
+        conn.execute(
+            "DELETE FROM mb_recording_artist WHERE match_id = ?", (match_id,))
+        artists = json.loads(result["artists_json"])
+        for position, artist in enumerate(artists):
+            conn.execute(
+                "INSERT OR IGNORE INTO mb_artist (mbid, name) VALUES (?, ?)",
+                (artist["mbid"], artist["name"]))
+            conn.execute(
+                "INSERT INTO mb_recording_artist (match_id, position, artist_mbid) "
+                "VALUES (?, ?, ?)",
+                (match_id, position, artist["mbid"]))
+
     return {"parsed": parsed, "no_match": no_match, "failed": failed, "cached": already}
 
 
@@ -126,15 +142,12 @@ def render_metadata(conn) -> str:
     lines.append("Top Artists")
     lines.append("-" * 20)
     for r in conn.execute(
-        "SELECT artists_json, count(*) c FROM musicbrainz_match "
-        "WHERE recording_mbid IS NOT NULL "
-        "GROUP BY artists_json ORDER BY c DESC LIMIT 10"
+        "SELECT ma.name, count(*) c FROM mb_recording_artist mra "
+        "JOIN mb_artist ma ON ma.mbid = mra.artist_mbid "
+        "JOIN musicbrainz_match mm ON mm.id = mra.match_id "
+        "WHERE mm.recording_mbid IS NOT NULL "
+        "GROUP BY ma.mbid ORDER BY c DESC LIMIT 10"
     ).fetchall():
-        try:
-            artists = json.loads(r["artists_json"])
-            name = ", ".join(a["name"] for a in artists)
-        except (json.JSONDecodeError, KeyError):
-            name = "(unknown)"
-        lines.append(f"  {name:<30} {r['c']:>5}")
+        lines.append(f"  {r['name']:<30} {r['c']:>5}")
 
     return "\n".join(lines)
