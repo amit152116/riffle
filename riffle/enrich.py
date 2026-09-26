@@ -262,9 +262,9 @@ def enrich(conn, api_key: str, client=None, sleeper=None) -> dict:
             continue
 
         conn.execute(
-            "INSERT INTO acoustid_cache (lookup_key, response_json, fetched_at) "
-            "VALUES (?,?,?)",
-            (key, json.dumps(response), datetime.now(UTC).isoformat()),
+            "INSERT INTO acoustid_cache (lookup_key, response_json, fetched_at, audio_content_id) "
+            "VALUES (?,?,?,?)",
+            (key, json.dumps(response), datetime.now(UTC).isoformat(), row["cid"]),
         )
         looked_up += 1
 

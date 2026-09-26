@@ -92,3 +92,34 @@ def test_mfcc_pack_unpack_roundtrip():
     assert len(blob) == 13 * 8
     recovered = store.unpack_mfcc(blob)
     np.testing.assert_array_almost_equal(original, recovered)
+
+
+def test_migration_4_creates_musicbrainz_match(tmp_path):
+    conn = store.connect(tmp_path / "db.sqlite")
+    tables = [r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'"
+    ).fetchall()]
+    assert "musicbrainz_match" in tables
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(musicbrainz_match)")]
+    assert "artists_json" in cols
+    assert "recording_mbid" in cols
+
+
+def test_migration_4_adds_audio_content_id_to_cache(tmp_path):
+    conn = store.connect(tmp_path / "db.sqlite")
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(acoustid_cache)")]
+    assert "audio_content_id" in cols
+
+
+def test_migration_5_creates_cluster_and_similarity_tables(tmp_path):
+    conn = store.connect(tmp_path / "db.sqlite")
+    tables = [r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'"
+    ).fetchall()]
+    assert "cluster_run" in tables
+    assert "cluster_centroid" in tables
+    assert "cluster_assignment" in tables
+    assert "track_similarity" in tables
+    sim_cols = [r[1] for r in conn.execute("PRAGMA table_info(track_similarity)")]
+    assert "mfcc_norm" in sim_cols
+    assert "combined_score" in sim_cols

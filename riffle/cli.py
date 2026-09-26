@@ -160,6 +160,33 @@ def quality(as_json: bool = False,
 
 
 @app.command()
+def features(as_json: bool = False,
+             limit: int | None = typer.Option(None, help="Max tracks to analyze")):
+    from riffle import features as features_mod
+
+    with _session() as conn:
+        result = features_mod.feature_scan(conn, limit=limit)
+        typer.echo(f"analyzed {result['analyzed']}, cached {result['cached']}, "
+                   f"failed {result['failed']}")
+        if not as_json:
+            typer.echo("")
+            typer.echo(features_mod.render_features(conn))
+
+
+@app.command()
+def metadata(as_json: bool = False):
+    from riffle import metadata as metadata_mod
+
+    with _session() as conn:
+        result = metadata_mod.parse_all(conn)
+        typer.echo(f"parsed {result['parsed']}, cached {result['cached']}, "
+                   f"no_match {result['no_match']}, failed {result['failed']}")
+        if not as_json:
+            typer.echo("")
+            typer.echo(metadata_mod.render_metadata(conn))
+
+
+@app.command()
 def calibrate(pairs_file: str):
     from riffle import calibrate as cal_mod
     from riffle import match as match_mod

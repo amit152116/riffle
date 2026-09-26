@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 5
 
 
 class LockError(Exception):
@@ -219,7 +219,67 @@ CREATE TABLE audio_features (
 );
 """
 
-_MIGRATIONS = [_MIGRATION_1, _MIGRATION_2, _MIGRATION_3]
+_MIGRATION_4 = """
+CREATE TABLE musicbrainz_match (
+    id                 INTEGER PRIMARY KEY,
+    audio_content_id   INTEGER NOT NULL REFERENCES audio_content(id),
+    acoustid_id        TEXT,
+    recording_mbid     TEXT,
+    recording_title    TEXT,
+    artists_json       TEXT,
+    release_title      TEXT,
+    release_mbid       TEXT,
+    score              REAL,
+    parsed_at          TEXT,
+    UNIQUE (audio_content_id)
+);
+
+ALTER TABLE acoustid_cache ADD COLUMN audio_content_id INTEGER REFERENCES audio_content(id);
+"""
+
+_MIGRATION_5 = """
+CREATE TABLE cluster_run (
+    id                  INTEGER PRIMARY KEY,
+    n_clusters          INTEGER NOT NULL,
+    n_tracks            INTEGER NOT NULL,
+    scaler_params       BLOB,
+    created_at          TEXT
+);
+
+CREATE TABLE cluster_centroid (
+    id                  INTEGER PRIMARY KEY,
+    run_id              INTEGER NOT NULL REFERENCES cluster_run(id),
+    cluster_id          INTEGER NOT NULL,
+    label               TEXT,
+    centroid            BLOB,
+    n_tracks            INTEGER,
+    UNIQUE (run_id, cluster_id)
+);
+
+CREATE TABLE cluster_assignment (
+    run_id              INTEGER NOT NULL REFERENCES cluster_run(id),
+    audio_content_id    INTEGER NOT NULL REFERENCES audio_content(id),
+    cluster_id          INTEGER NOT NULL,
+    distance_to_centroid REAL,
+    PRIMARY KEY (run_id, audio_content_id)
+);
+
+CREATE TABLE track_similarity (
+    track_a_id       INTEGER NOT NULL REFERENCES track(id),
+    track_b_id       INTEGER NOT NULL REFERENCES track(id),
+    mfcc_norm        REAL NOT NULL,
+    bpm_norm         REAL,
+    key_norm         REAL,
+    energy_norm      REAL,
+    combined_score   REAL NOT NULL,
+    PRIMARY KEY (track_a_id, track_b_id),
+    CHECK (track_a_id < track_b_id)
+);
+CREATE INDEX sim_track_a ON track_similarity(track_a_id, combined_score);
+CREATE INDEX sim_track_b ON track_similarity(track_b_id, combined_score);
+"""
+
+_MIGRATIONS = [_MIGRATION_1, _MIGRATION_2, _MIGRATION_3, _MIGRATION_4, _MIGRATION_5]
 
 
 def connect(db_path: Path) -> sqlite3.Connection:
