@@ -182,5 +182,12 @@ def build_similarity(conn, top_k: int = 20) -> dict:
 
 
 def full_rebuild(conn, top_k: int = 20) -> dict:
-    conn.execute("DELETE FROM track_similarity")
-    return build_similarity(conn, top_k)
+    conn.execute("BEGIN")
+    try:
+        conn.execute("DELETE FROM track_similarity")
+        result = build_similarity(conn, top_k)
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    conn.execute("COMMIT")
+    return result

@@ -21,6 +21,13 @@ def extraction_config_hash() -> str:
     return hashlib.sha256(blob.encode()).hexdigest()
 
 
+def _compute_energy(raw_energy: float, n_samples: int) -> float:
+    if n_samples <= 0:
+        return 0.0
+    mean_square = raw_energy / n_samples
+    return min(mean_square ** 0.5, 1.0)
+
+
 def _correct_bpm(bpm: float) -> float:
     if bpm < 60.0:
         return bpm * 2.0
@@ -56,10 +63,7 @@ def extract_file(path) -> dict:
     dance, _ = es.Danceability()(audio)
 
     raw_energy = float(es.Energy()(audio))
-    n_samples = len(audio)
-    max_energy = float(n_samples)  # max energy = sum of 1.0^2 * n
-    energy = raw_energy / max_energy if max_energy > 0 else 0.0
-    energy = min(energy, 1.0)
+    energy = _compute_energy(raw_energy, len(audio))
 
     sc = float(es.SpectralCentroidTime()(audio))
 
@@ -112,7 +116,18 @@ from pathlib import Path
 from riffle import store
 
 
+def _check_essentia_available() -> None:
+    try:
+        import essentia.standard  # noqa: F401
+    except ImportError as exc:
+        raise ImportError(
+            "Essentia is not installed. Install it with: pip install essentia"
+        ) from exc
+
+
 def feature_scan(conn, limit: int | None = None) -> dict:
+    _check_essentia_available()
+
     query = (
         "SELECT t.id AS track_id, t.path, t.audio_content_id "
         "FROM track t "

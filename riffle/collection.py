@@ -36,9 +36,8 @@ def browse(conn, *, sort_by: str = "artist", genre: str | None = None,
         query += (
             " AND t.audio_content_id IN ("
             "SELECT ca.audio_content_id FROM cluster_assignment ca "
-            "JOIN cluster_run cr ON cr.id = ca.run_id "
             "WHERE ca.cluster_id = ? "
-            "ORDER BY cr.id DESC LIMIT 1)"
+            "AND ca.run_id = (SELECT max(id) FROM cluster_run))"
         )
         params.append(cluster)
 

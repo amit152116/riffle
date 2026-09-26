@@ -137,6 +137,45 @@ def test_cluster_identical_features(tmp_path):
     assert assigned == 20
 
 
+def test_cluster_grows_past_single_cluster_threshold(tmp_path):
+    """Review finding I3: a library that starts under 15 tracks (single
+    cluster 'All') and later grows past 15 must re-cluster properly on the
+    next plain `cluster_tracks()` call, not stay stuck at n_clusters=1."""
+    conn = store.connect(tmp_path / "db.sqlite")
+    _seed_features(conn, n=10)
+    from riffle import cluster
+    first = cluster.cluster_tracks(conn)
+    assert first["n_clusters"] == 1
+
+    rng = np.random.RandomState(7)
+    for i in range(11, 21):
+        conn.execute(
+            "INSERT INTO audio_content (id, audio_hash, hash_method, duration) "
+            "VALUES (?, ?, 'streamhash', 200.0)", (i, f"h{i}"))
+        conn.execute(
+            "INSERT INTO track (id, path, size, mtime, audio_content_id, present) "
+            "VALUES (?, ?, 1000, 1.0, ?, 1)", (i, f"/music/t{i}.mp3", i))
+        mfcc = store.pack_mfcc(rng.randn(13))
+        conn.execute(
+            "INSERT INTO audio_features (audio_content_id, bpm, bpm_confidence, "
+            "key_name, scale, key_strength, loudness_lufs, danceability, energy, "
+            "spectral_centroid, onset_rate, dynamic_complexity, dissonance, zcr, "
+            "mfcc_mean, extractor_version, config_hash, analyzed_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (i, 80.0 + rng.rand() * 100, 0.9, "C", "major", 0.8,
+             -20.0 + rng.rand() * 10, rng.rand(), rng.rand(),
+             1000 + rng.rand() * 5000, rng.rand() * 10, 5.0, 0.3, 0.05, mfcc,
+             "2.1b6", "abc", "2026-01-01"))
+
+    second = cluster.cluster_tracks(conn, n_clusters=3)
+    assert second["n_clusters"] == 3
+    sizes = conn.execute(
+        "SELECT count(DISTINCT cluster_id) c FROM cluster_assignment "
+        "WHERE run_id = ?", (second["run_id"],)
+    ).fetchone()["c"]
+    assert sizes == 3
+
+
 def test_cluster_rebuild_stabilizes_ids(tmp_path):
     conn = store.connect(tmp_path / "db.sqlite")
     _seed_features(conn, n=30)
@@ -183,6 +222,47 @@ def test_cluster_drift_detection(tmp_path):
         "SELECT n_tracks FROM cluster_run ORDER BY id DESC LIMIT 1"
     ).fetchone()["n_tracks"]
     assert n_at_build == 20
+
+
+def test_rebuild_clusters_is_atomic_on_failure(tmp_path, monkeypatch):
+    """Review finding I5: rebuild_clusters does a full re-cluster plus a
+    two-pass ID relabel as many separate autocommit statements. If something
+    raises partway through, a crash/interrupt must not leave the database
+    half-migrated (e.g. sentinel cluster_id values like -1003, or a new
+    cluster_run with no matching centroids)."""
+    conn = store.connect(tmp_path / "db.sqlite")
+    _seed_features(conn, n=30)
+    from riffle import cluster
+    first = cluster.cluster_tracks(conn, n_clusters=3)
+    runs_before = conn.execute("SELECT count(*) c FROM cluster_run").fetchone()["c"]
+    centroids_before = conn.execute("SELECT count(*) c FROM cluster_centroid").fetchone()["c"]
+    assignments_before = conn.execute("SELECT count(*) c FROM cluster_assignment").fetchone()["c"]
+
+    real_label_cluster = cluster.label_cluster
+    call_count = {"n": 0}
+
+    def _boom(conn, cluster_id, run_id):
+        call_count["n"] += 1
+        if call_count["n"] == 2:
+            raise RuntimeError("simulated crash mid-relabel")
+        return real_label_cluster(conn, cluster_id, run_id)
+
+    monkeypatch.setattr(cluster, "label_cluster", _boom)
+    import pytest
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        cluster.rebuild_clusters(conn, n_clusters=3)
+
+    runs_after = conn.execute("SELECT count(*) c FROM cluster_run").fetchone()["c"]
+    centroids_after = conn.execute("SELECT count(*) c FROM cluster_centroid").fetchone()["c"]
+    assignments_after = conn.execute("SELECT count(*) c FROM cluster_assignment").fetchone()["c"]
+    sentinel_rows = conn.execute(
+        "SELECT count(*) c FROM cluster_centroid WHERE cluster_id <= -1000"
+    ).fetchone()["c"]
+
+    assert runs_after == runs_before
+    assert centroids_after == centroids_before
+    assert assignments_after == assignments_before
+    assert sentinel_rows == 0
 
 
 def test_render_clusters(tmp_path):

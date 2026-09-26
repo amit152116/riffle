@@ -165,7 +165,11 @@ def features(as_json: bool = False,
     from riffle import features as features_mod
 
     with _session() as conn:
-        result = features_mod.feature_scan(conn, limit=limit)
+        try:
+            result = features_mod.feature_scan(conn, limit=limit)
+        except ImportError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(code=1)
         typer.echo(f"analyzed {result['analyzed']}, cached {result['cached']}, "
                    f"failed {result['failed']}")
         if not as_json:
@@ -243,6 +247,45 @@ def build_index(top_k: int = 20, rebuild: bool = False, as_json: bool = False):
             result = similarity.build_similarity(conn, top_k)
         typer.echo(f"new {result['new_tracks']}, pairs {result['pairs_stored']}, "
                    f"updated {result['existing_updated']}")
+
+
+@app.command()
+def similar(track: str, n: int = 10, as_json: bool = False):
+    from riffle import shuffle as shuffle_mod
+
+    with _session() as conn:
+        try:
+            track_id = shuffle_mod.resolve_track(conn, track)
+        except ValueError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(code=1)
+        rows = shuffle_mod.find_similar(conn, track_id, n=n)
+        if as_json:
+            typer.echo(json.dumps(rows, indent=2))
+        else:
+            typer.echo(shuffle_mod.render_similar(rows))
+
+
+@app.command()
+def shuffle(seed: str | None = None, n: int = 20,
+            genre: str | None = None,
+            bpm_min: float | None = None, bpm_max: float | None = None,
+            as_json: bool = False):
+    from riffle import shuffle as shuffle_mod
+
+    bpm_range = (bpm_min, bpm_max) if bpm_min is not None and bpm_max is not None else None
+    with _session() as conn:
+        try:
+            seed_id = shuffle_mod.resolve_track(conn, seed) if seed else None
+        except ValueError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(code=1)
+        playlist = shuffle_mod.smart_shuffle(
+            conn, seed_track_id=seed_id, n=n, genre=genre, bpm_range=bpm_range)
+        if as_json:
+            typer.echo(json.dumps(playlist, indent=2))
+        else:
+            typer.echo(shuffle_mod.render_playlist(playlist))
 
 
 @app.command()

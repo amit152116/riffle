@@ -93,6 +93,25 @@ def test_render_browse(tmp_path):
     assert "BPM" in text
 
 
+def test_browse_filter_cluster_returns_all_members(tmp_path):
+    conn = store.connect(tmp_path / "db.sqlite")
+    _seed_db(conn, n=6)
+    conn.execute(
+        "INSERT INTO cluster_run (id, n_clusters, n_tracks, created_at) "
+        "VALUES (1, 2, 6, '2026-01-01')")
+    for cid in (1, 2, 3):
+        conn.execute(
+            "INSERT INTO cluster_assignment (run_id, audio_content_id, cluster_id) "
+            "VALUES (1, ?, 0)", (cid,))
+    for cid in (4, 5, 6):
+        conn.execute(
+            "INSERT INTO cluster_assignment (run_id, audio_content_id, cluster_id) "
+            "VALUES (1, ?, 1)", (cid,))
+    from riffle import collection
+    rows = collection.browse(conn, cluster=0, limit=50)
+    assert len(rows) == 3
+
+
 def test_render_stats(tmp_path):
     conn = store.connect(tmp_path / "db.sqlite")
     _seed_db(conn)

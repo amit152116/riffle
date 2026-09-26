@@ -189,3 +189,26 @@ def test_full_rebuild(tmp_path):
     similarity.full_rebuild(conn, top_k=5)
     rows = conn.execute("SELECT count(*) c FROM track_similarity").fetchone()["c"]
     assert rows > 0
+
+
+def test_full_rebuild_is_atomic_on_failure(tmp_path, monkeypatch):
+    """Review finding I5: full_rebuild deletes the whole index then rebuilds
+    it as separate autocommit statements. If build_similarity raises partway
+    through, a crash/interrupt must not leave the index empty or half-built."""
+    conn = store.connect(tmp_path / "db.sqlite")
+    _seed_tracks_with_features(conn, n=10)
+    from riffle import similarity
+    similarity.build_similarity(conn, top_k=5)
+    rows_before = conn.execute("SELECT count(*) c FROM track_similarity").fetchone()["c"]
+    assert rows_before > 0
+
+    def _boom(conn, top_k=20):
+        raise RuntimeError("simulated crash mid-rebuild")
+
+    monkeypatch.setattr(similarity, "build_similarity", _boom)
+    import pytest
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        similarity.full_rebuild(conn, top_k=5)
+
+    rows_after = conn.execute("SELECT count(*) c FROM track_similarity").fetchone()["c"]
+    assert rows_after == rows_before

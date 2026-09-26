@@ -55,7 +55,12 @@ def cluster_tracks(conn, n_clusters: int | None = None) -> dict:
         return {"run_id": run_id, "n_clusters": 1, "sizes": [n_tracks], "labels": ["All"]}
 
     latest = _latest_run(conn)
-    if latest is not None:
+    needs_full_cluster = (
+        latest is None
+        or latest["n_clusters"] == 1
+        or (n_clusters is not None and n_clusters != latest["n_clusters"])
+    )
+    if not needs_full_cluster:
         return _assign_new_to_existing(conn, matrix, content_ids, latest)
 
     return _full_cluster(conn, matrix, content_ids, n_clusters)
@@ -195,6 +200,17 @@ def rebuild_clusters(conn, n_clusters: int | None = None) -> dict:
     if len(content_ids) < 15:
         return cluster_tracks(conn, n_clusters)
 
+    conn.execute("BEGIN")
+    try:
+        result = _rebuild_clusters_txn(conn, matrix, content_ids, n_clusters)
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    conn.execute("COMMIT")
+    return result
+
+
+def _rebuild_clusters_txn(conn, matrix, content_ids, n_clusters) -> dict:
     old_run = _latest_run(conn)
     old_centroids = None
     if old_run is not None:

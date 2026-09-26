@@ -48,6 +48,17 @@ def test_bpm_octave_correction(tmp_path):
     assert features._correct_bpm(120.0) == 120.0
 
 
+def test_energy_is_rms_not_mean_square():
+    """Review finding I1: spec says 'RMS power normalized to 0-1', but the
+    code was computing mean-square (no sqrt), which understates energy for
+    any real track and makes the Calm/Energetic cluster labels meaningless."""
+    from riffle import features
+    n_samples = 1000
+    raw_energy = n_samples * 0.25  # mean-square power of 0.25
+    energy = features._compute_energy(raw_energy, n_samples)
+    assert energy == 0.5  # sqrt(0.25), not 0.25 itself
+
+
 def test_extraction_config_hash_deterministic():
     from riffle import features
     h1 = features.extraction_config_hash()
@@ -144,3 +155,39 @@ def test_render_features(tmp_path):
     text = features.render_features(conn)
     assert "BPM" in text
     assert "Key" in text
+
+
+def test_feature_scan_raises_clearly_when_essentia_missing(tmp_path, monkeypatch):
+    """Review Focus #1 (re-check): a whole-scan-level ImportError must not be
+    swallowed as a per-track 'failed' count -- it must surface to the caller."""
+    conn = store.connect(tmp_path / "db.sqlite")
+    p = make_tone(tmp_path / "song.flac", seconds=5.0, volume=0.5)
+    _db_with_track(conn, tmp_path, p)
+    from riffle import features
+
+    def _boom():
+        raise ImportError("Essentia is not installed. Install it with: pip install essentia")
+
+    monkeypatch.setattr(features, "_check_essentia_available", _boom)
+    import pytest
+    with pytest.raises(ImportError, match="pip install essentia"):
+        features.feature_scan(conn)
+
+
+def test_cli_features_reports_missing_essentia_cleanly(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+    from riffle.cli import app
+    from riffle import features as features_mod
+
+    def _boom(conn, limit=None):
+        raise ImportError("Essentia is not installed. Install it with: pip install essentia")
+
+    monkeypatch.setattr(features_mod, "feature_scan", _boom)
+    runner = CliRunner()
+    db = str(tmp_path / "db.sqlite")
+    from riffle import store
+    store.connect(tmp_path / "db.sqlite")
+    result = runner.invoke(app, ["--db", db, "features"])
+    assert result.exit_code == 1
+    assert "essentia" in result.output.lower()
+    assert "Traceback" not in result.stdout
