@@ -370,3 +370,81 @@ def test_migration_7_preserves_all_pre_existing_indexes(tmp_path):
             if not r["name"].startswith("sqlite_autoindex")
         }
         assert names <= after, f"{table} lost an index: {names - after}"
+
+
+def test_migration_7_preserves_existing_pair_and_quarantine_and_group_member_rows(tmp_path):
+    """Review Focus #5 / spec S7: pair, quarantine_log and group_member are
+    rebuilt (pair/quarantine_log for FKs, group_member for the dropped
+    column) but never exercised against pre-existing rows elsewhere. Every
+    row must survive with its values unchanged, and no dangling references
+    may result from any of the four rebuilds put together."""
+    db_path = tmp_path / "db.sqlite"
+    conn = _connect_at_v6(db_path)
+    conn.execute("INSERT INTO match_run (id, status) VALUES (1, 'complete')")
+    conn.execute(
+        "INSERT INTO audio_content (id, audio_hash, hash_method) "
+        "VALUES (1, 'h1', 'streamhash')")
+    conn.execute(
+        "INSERT INTO audio_content (id, audio_hash, hash_method) "
+        "VALUES (2, 'h2', 'streamhash')")
+    conn.execute(
+        "INSERT INTO track (id, path, audio_content_id, present) "
+        "VALUES (1, '/m/a.mp3', 1, 1)")
+    conn.execute(
+        "INSERT INTO dup_group (id, run_id, tier) VALUES (1, 1, 1)")
+    conn.execute(
+        "INSERT INTO group_member (group_id, track_id, audio_content_id, "
+        "is_keeper) VALUES (1, 1, 1, 1)")
+    conn.execute(
+        "INSERT INTO pair (run_id, a_content_id, b_content_id, tier) "
+        "VALUES (1, 1, 2, 1)")
+    conn.execute(
+        "INSERT INTO quarantine_log (id, run_id, track_id, group_id, "
+        "src_path, dst_path, state) "
+        "VALUES (1, 1, 1, 1, '/src', '/dst', 'moved')")
+    conn.close()
+
+    conn = store.connect(db_path)
+
+    pair = conn.execute(
+        "SELECT * FROM pair WHERE run_id = 1 AND a_content_id = 1"
+    ).fetchone()
+    assert pair["b_content_id"] == 2
+    assert pair["tier"] == 1
+
+    ql = conn.execute("SELECT * FROM quarantine_log WHERE id = 1").fetchone()
+    assert ql["src_path"] == "/src"
+    assert ql["state"] == "moved"
+
+    gm = conn.execute(
+        "SELECT * FROM group_member WHERE group_id = 1 AND track_id = 1"
+    ).fetchone()
+    assert gm["is_keeper"] == 1
+
+    violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+    assert violations == []
+
+
+def test_migration_7_dangling_reference_fails_loudly_and_rolls_back(tmp_path):
+    """A v6 database that already has a dangling reference (data corruption
+    predating this migration) must not silently become an invalid v7
+    database -- it must fail with a readable diagnostic naming the table,
+    and schema_version must stay at 6 so a retry sees the same state."""
+    db_path = tmp_path / "db.sqlite"
+    conn = _connect_at_v6(db_path)
+    conn.execute("INSERT INTO match_run (id, status) VALUES (1, 'complete')")
+    conn.execute(
+        "INSERT INTO run_track (run_id, track_id, path) "
+        "VALUES (1, 999, '/gone.mp3')")  # track 999 was never inserted
+    conn.close()
+
+    with pytest.raises(RuntimeError) as excinfo:
+        store.connect(db_path)
+    message = str(excinfo.value)
+    assert "run_track" in message
+    assert "Row object" not in message
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    version = conn.execute("SELECT version FROM schema_version").fetchone()["version"]
+    assert version == 6

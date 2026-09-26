@@ -437,7 +437,7 @@ def _migration_7(conn: sqlite3.Connection) -> None:
         for stmt in _MIGRATION_7_STATEMENTS:
             conn.execute(stmt)
         _backfill_mb_artists(conn)
-        violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+        violations = [tuple(v) for v in conn.execute("PRAGMA foreign_key_check").fetchall()]
         if violations:
             raise RuntimeError(
                 f"Migration 7 left {len(violations)} dangling reference(s): {violations}")
