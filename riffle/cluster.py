@@ -19,8 +19,10 @@ def load_feature_matrix(conn) -> tuple[np.ndarray, list[int]]:
     rows = conn.execute(
         "SELECT audio_content_id, bpm, energy, danceability, loudness_lufs, "
         "spectral_centroid, onset_rate, mfcc_mean "
-        "FROM audio_features "
-        "WHERE bpm IS NOT NULL AND energy IS NOT NULL AND mfcc_mean IS NOT NULL"
+        "FROM audio_features af "
+        "WHERE bpm IS NOT NULL AND energy IS NOT NULL AND mfcc_mean IS NOT NULL "
+        "AND EXISTS (SELECT 1 FROM track t "
+        "WHERE t.audio_content_id = af.audio_content_id AND t.present = 1)"
     ).fetchall()
 
     content_ids = []
@@ -91,6 +93,12 @@ def _create_single_cluster(conn, matrix, content_ids) -> int:
 
 
 def _full_cluster(conn, matrix, content_ids, n_clusters=None) -> dict:
+    if n_clusters is not None and n_clusters > len(content_ids):
+        raise ValueError(
+            f"Cannot cluster into {n_clusters} clusters: only "
+            f"{len(content_ids)} tracks have features."
+        )
+
     scaler = StandardScaler()
     scaled = scaler.fit_transform(matrix)
 
@@ -333,7 +341,7 @@ def render_clusters(conn) -> str:
         examples = conn.execute(
             "SELECT t.tag_artist, t.tag_title FROM cluster_assignment ca "
             "JOIN track t ON t.audio_content_id = ca.audio_content_id "
-            "WHERE ca.run_id = ? AND ca.cluster_id = ? LIMIT 3",
+            "WHERE ca.run_id = ? AND ca.cluster_id = ? AND t.present = 1 LIMIT 3",
             (run_id, c["cluster_id"])
         ).fetchall()
         for ex in examples:

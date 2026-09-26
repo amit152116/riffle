@@ -58,7 +58,7 @@ def stats(conn) -> dict:
     with_metadata = conn.execute(
         "SELECT count(*) c FROM track t "
         "JOIN musicbrainz_match mm ON mm.audio_content_id = t.audio_content_id "
-        "WHERE t.present = 1"
+        "WHERE t.present = 1 AND mm.recording_mbid IS NOT NULL"
     ).fetchone()["c"]
 
     genre_rows = conn.execute(

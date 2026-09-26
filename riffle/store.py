@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 class LockError(Exception):
@@ -279,7 +279,27 @@ CREATE INDEX sim_track_a ON track_similarity(track_a_id, combined_score);
 CREATE INDEX sim_track_b ON track_similarity(track_b_id, combined_score);
 """
 
-_MIGRATIONS = [_MIGRATION_1, _MIGRATION_2, _MIGRATION_3, _MIGRATION_4, _MIGRATION_5]
+_MIGRATION_6 = """
+DROP INDEX IF EXISTS sim_track_a;
+DROP INDEX IF EXISTS sim_track_b;
+DROP TABLE IF EXISTS track_similarity;
+
+CREATE TABLE track_similarity (
+    track_id         INTEGER NOT NULL REFERENCES track(id),
+    neighbor_id      INTEGER NOT NULL REFERENCES track(id),
+    mfcc_norm        REAL NOT NULL,
+    bpm_norm         REAL,
+    key_norm         REAL,
+    energy_norm      REAL,
+    combined_score   REAL NOT NULL,
+    config_hash      TEXT,
+    PRIMARY KEY (track_id, neighbor_id)
+);
+CREATE INDEX sim_track_score ON track_similarity(track_id, combined_score);
+"""
+
+_MIGRATIONS = [_MIGRATION_1, _MIGRATION_2, _MIGRATION_3, _MIGRATION_4, _MIGRATION_5,
+               _MIGRATION_6]
 
 
 def connect(db_path: Path) -> sqlite3.Connection:

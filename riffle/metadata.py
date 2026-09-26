@@ -64,6 +64,11 @@ def parse_all(conn) -> dict:
             continue
 
         if result is None:
+            conn.execute(
+                "INSERT INTO musicbrainz_match (audio_content_id, parsed_at) "
+                "VALUES (?, ?) ON CONFLICT(audio_content_id) DO NOTHING",
+                (row["audio_content_id"], datetime.now(UTC).isoformat()),
+            )
             no_match += 1
             continue
 
@@ -89,7 +94,9 @@ def parse_all(conn) -> dict:
 
 
 def render_metadata(conn) -> str:
-    total = conn.execute("SELECT count(*) c FROM musicbrainz_match").fetchone()["c"]
+    total = conn.execute(
+        "SELECT count(*) c FROM musicbrainz_match WHERE recording_mbid IS NOT NULL"
+    ).fetchone()["c"]
     cache_total = conn.execute(
         "SELECT count(*) c FROM acoustid_cache WHERE audio_content_id IS NOT NULL"
     ).fetchone()["c"]
@@ -120,6 +127,7 @@ def render_metadata(conn) -> str:
     lines.append("-" * 20)
     for r in conn.execute(
         "SELECT artists_json, count(*) c FROM musicbrainz_match "
+        "WHERE recording_mbid IS NOT NULL "
         "GROUP BY artists_json ORDER BY c DESC LIMIT 10"
     ).fetchall():
         try:

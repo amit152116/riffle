@@ -138,6 +138,44 @@ def test_smart_shuffle_partial_when_few_tracks(tmp_path):
     assert 1 <= len(playlist) <= 5
 
 
+def test_find_similar_excludes_non_present_tracks(tmp_path):
+    """M4: quarantined/missing tracks (present=0) must never surface in
+    'riffle similar' results, even if a stale track_similarity row for them
+    still exists from before they were quarantined."""
+    conn = store.connect(tmp_path / "db.sqlite")
+    _seed_library(conn, n=10)
+    from riffle import shuffle
+    before = shuffle.find_similar(conn, 1, n=9)
+    assert len(before) == 9
+
+    quarantined_id = conn.execute(
+        "SELECT neighbor_id FROM track_similarity WHERE track_id = 1 LIMIT 1"
+    ).fetchone()["neighbor_id"]
+    conn.execute(
+        "UPDATE track SET present = 0, absent_reason = 'quarantined' WHERE id = ?",
+        (quarantined_id,))
+
+    after = shuffle.find_similar(conn, 1, n=9)
+    after_paths = {r["path"] for r in after}
+    quarantined_path = conn.execute(
+        "SELECT path FROM track WHERE id = ?", (quarantined_id,)
+    ).fetchone()["path"]
+    assert quarantined_path not in after_paths
+
+
+def test_smart_shuffle_seed_outside_filter_raises(tmp_path):
+    """M7: a seed track that doesn't satisfy the active genre/BPM hard
+    filters must raise a clear error, not silently fall back to a random
+    seed from the filtered pool (which would surprise the caller)."""
+    conn = store.connect(tmp_path / "db.sqlite")
+    _seed_library(conn, n=15)
+    # track 1 is Rock (odd i); ask for Pop with seed=track 1
+    from riffle import shuffle
+    import pytest
+    with pytest.raises(ValueError, match="[Ss]eed|[Ff]ilter"):
+        shuffle.smart_shuffle(conn, seed_track_id=1, n=5, genre="Pop")
+
+
 def test_cli_similar_ambiguous_track_reports_cleanly(tmp_path):
     from typer.testing import CliRunner
     from riffle.cli import app
@@ -152,6 +190,24 @@ def test_cli_similar_ambiguous_track_reports_cleanly(tmp_path):
     assert result.exit_code == 1
     assert "Traceback" not in result.output
     assert "ambiguous" in result.output.lower() or "multiple" in result.output.lower()
+
+
+def test_cli_shuffle_seed_outside_filter_reports_cleanly(tmp_path):
+    from typer.testing import CliRunner
+    from riffle.cli import app
+    from riffle import store as store_mod
+
+    conn = store_mod.connect(tmp_path / "db.sqlite")
+    _seed_library(conn, n=15)
+    conn.close()
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app, ["--db", str(tmp_path / "db.sqlite"), "shuffle",
+              "--seed", "track1.mp3", "--genre", "Pop"])
+    assert result.exit_code == 1
+    assert "Traceback" not in result.output
+    assert "seed" in result.output.lower() or "filter" in result.output.lower()
 
 
 def test_cli_shuffle_seed_not_found_reports_cleanly(tmp_path):

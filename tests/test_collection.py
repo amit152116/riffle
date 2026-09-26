@@ -83,6 +83,19 @@ def test_stats_bpm_histogram(tmp_path):
     assert total_in_buckets == 5
 
 
+def test_stats_total_with_metadata_excludes_no_match_sentinels(tmp_path):
+    """M7 consumer fix: a musicbrainz_match row for a no_match outcome
+    (recording_mbid IS NULL) must not count as 'has metadata'."""
+    conn = store.connect(tmp_path / "db.sqlite")
+    _seed_db(conn, n=5)
+    conn.execute(
+        "INSERT INTO musicbrainz_match (audio_content_id, parsed_at) "
+        "VALUES (1, '2026-01-01')")
+    from riffle import collection
+    data = collection.stats(conn)
+    assert data["total_with_metadata"] == 0
+
+
 def test_render_browse(tmp_path):
     conn = store.connect(tmp_path / "db.sqlite")
     _seed_db(conn)

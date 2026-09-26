@@ -10,12 +10,11 @@ def find_similar(conn, track_id: int, n: int = 10) -> list[dict]:
     rows = conn.execute(
         "SELECT ts.*, t.path, t.tag_artist, t.tag_title, af.bpm, af.key_name, af.scale "
         "FROM track_similarity ts "
-        "JOIN track t ON t.id = CASE WHEN ts.track_a_id = ? THEN ts.track_b_id "
-        "                            ELSE ts.track_a_id END "
+        "JOIN track t ON t.id = ts.neighbor_id "
         "JOIN audio_features af ON af.audio_content_id = t.audio_content_id "
-        "WHERE ts.track_a_id = ? OR ts.track_b_id = ? "
+        "WHERE ts.track_id = ? AND t.present = 1 "
         "ORDER BY ts.combined_score ASC LIMIT ?",
-        (track_id, track_id, track_id, n)
+        (track_id, n)
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -93,7 +92,12 @@ def smart_shuffle(conn, *, seed_track_id: int | None = None,
         siblings = content_siblings.get(pool[track_id]["audio_content_id"], set()) - {track_id}
         return dup_exclusions.get(track_id, set()) | siblings
 
-    if seed_track_id is not None and seed_track_id in pool:
+    if seed_track_id is not None:
+        if seed_track_id not in pool:
+            raise ValueError(
+                f"Seed track {seed_track_id} does not satisfy the active "
+                "genre/BPM filters"
+            )
         seed = seed_track_id
     else:
         seed = random.choice(list(pool.keys()))
@@ -111,8 +115,7 @@ def smart_shuffle(conn, *, seed_track_id: int | None = None,
         best_candidate = None
 
         for cand in candidates:
-            cand_id = cand.get("track_b_id") if cand.get("track_a_id") == current_id \
-                else cand.get("track_a_id")
+            cand_id = cand.get("neighbor_id")
             if cand_id is None or cand_id in used_ids or cand_id not in pool:
                 continue
 
@@ -120,20 +123,22 @@ def smart_shuffle(conn, *, seed_track_id: int | None = None,
 
             recent_artists = [p["tag_artist"] for p in playlist[-3:]]
             cand_artist = pool[cand_id].get("tag_artist")
-            if cand_artist in recent_artists:
+            if cand_artist is not None and cand_artist in recent_artists:
                 score += 0.5
 
-            cand_bpm = pool[cand_id].get("bpm") or 0
-            curr_bpm = current.get("bpm") or 0
-            if abs(cand_bpm - curr_bpm) > 15:
-                score += 0.3
+            cand_bpm = pool[cand_id].get("bpm")
+            curr_bpm = current.get("bpm")
+            if not similarity._is_missing_bpm(cand_bpm) and not similarity._is_missing_bpm(curr_bpm):
+                if abs(cand_bpm - curr_bpm) > 15:
+                    score += 0.3
 
-            cand_key = pool[cand_id].get("key_name") or "C"
-            cand_scale = pool[cand_id].get("scale") or "major"
-            curr_key = current.get("key_name") or "C"
-            curr_scale = current.get("scale") or "major"
-            if similarity.key_distance(curr_key, curr_scale, cand_key, cand_scale) <= 1:
-                score -= 0.2
+            cand_key = pool[cand_id].get("key_name")
+            curr_key = current.get("key_name")
+            if not similarity._is_missing_key(cand_key) and not similarity._is_missing_key(curr_key):
+                cand_scale = pool[cand_id].get("scale") or "major"
+                curr_scale = current.get("scale") or "major"
+                if similarity.key_distance(curr_key, curr_scale, cand_key, cand_scale) <= 1:
+                    score -= 0.2
 
             if score < best_score:
                 best_score = score

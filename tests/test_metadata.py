@@ -152,6 +152,46 @@ def test_parse_all_no_match(tmp_path):
     assert result["no_match"] == 1
 
 
+def test_parse_all_does_not_reparse_no_match_rows(tmp_path):
+    """M7: a no_match outcome is a stable fact (AcoustID's own response says
+    no recording matched) and must be remembered, not re-parsed forever."""
+    conn = store.connect(tmp_path / "db.sqlite")
+    empty_response = {"status": "ok", "results": []}
+    _insert_cache_row(conn, 1, empty_response)
+    from riffle import metadata
+    first = metadata.parse_all(conn)
+    assert first["no_match"] == 1
+
+    second = metadata.parse_all(conn)
+    assert second["no_match"] == 0
+    assert second["parsed"] == 0
+
+
+def test_render_metadata_matched_count_excludes_no_match_sentinels(tmp_path):
+    """M7 consumer fix: once no_match rows are cached as sentinel rows in
+    musicbrainz_match, 'Matched:' must still count only real matches, not
+    every attempted row."""
+    conn = store.connect(tmp_path / "db.sqlite")
+    _insert_cache_row(conn, 1, SAMPLE_RESPONSE)
+    _insert_cache_row(conn, 2, {"status": "ok", "results": []})
+    from riffle import metadata
+    metadata.parse_all(conn)
+    text = metadata.render_metadata(conn)
+    assert "Matched:             1" in text
+
+
+def test_render_metadata_top_artists_skips_no_match_sentinels(tmp_path):
+    """M7 consumer fix: a sentinel row has artists_json=NULL. The top-artists
+    loop must not crash trying to json.loads(None)."""
+    conn = store.connect(tmp_path / "db.sqlite")
+    _insert_cache_row(conn, 1, SAMPLE_RESPONSE)
+    _insert_cache_row(conn, 2, {"status": "ok", "results": []})
+    from riffle import metadata
+    metadata.parse_all(conn)
+    text = metadata.render_metadata(conn)  # must not raise
+    assert "A.R. Rahman" in text
+
+
 def test_parse_all_empty_cache(tmp_path):
     conn = store.connect(tmp_path / "db.sqlite")
     from riffle import metadata
@@ -168,3 +208,21 @@ def test_render_metadata(tmp_path):
     metadata.parse_all(conn)
     text = metadata.render_metadata(conn)
     assert "Matched" in text or "matched" in text
+
+
+def test_cli_metadata_as_json_emits_valid_json(tmp_path):
+    """M6: --as-json must emit machine-readable JSON, not just suppress the
+    human-readable report."""
+    from typer.testing import CliRunner
+    from riffle.cli import app
+
+    db = str(tmp_path / "db.sqlite")
+    conn = store.connect(tmp_path / "db.sqlite")
+    _insert_cache_row(conn, 1, SAMPLE_RESPONSE)
+    conn.close()
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["--db", db, "metadata", "--as-json"])
+    assert result.exit_code == 0
+    data = json.loads(result.stdout)
+    assert data["parsed"] == 1

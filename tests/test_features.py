@@ -1,4 +1,5 @@
 """Tests for audio feature extraction."""
+import json
 from pathlib import Path
 
 import numpy as np
@@ -172,6 +173,26 @@ def test_feature_scan_raises_clearly_when_essentia_missing(tmp_path, monkeypatch
     import pytest
     with pytest.raises(ImportError, match="pip install essentia"):
         features.feature_scan(conn)
+
+
+def test_cli_features_as_json_emits_valid_json(tmp_path):
+    """M6: --as-json must emit machine-readable JSON, not just suppress the
+    human-readable report."""
+    from typer.testing import CliRunner
+    from riffle.cli import app
+
+    lib = tmp_path / "lib"
+    p = make_tone(lib / "song.flac", seconds=5.0, volume=0.5)
+    db = str(tmp_path / "db.sqlite")
+    conn = store.connect(tmp_path / "db.sqlite")
+    _db_with_track(conn, tmp_path, p)
+    conn.close()
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["--db", db, "features", "--as-json"])
+    assert result.exit_code == 0
+    data = json.loads(result.stdout)
+    assert data["analyzed"] == 1
 
 
 def test_cli_features_reports_missing_essentia_cleanly(tmp_path, monkeypatch):

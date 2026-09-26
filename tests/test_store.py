@@ -123,3 +123,34 @@ def test_migration_5_creates_cluster_and_similarity_tables(tmp_path):
     sim_cols = [r[1] for r in conn.execute("PRAGMA table_info(track_similarity)")]
     assert "mfcc_norm" in sim_cols
     assert "combined_score" in sim_cols
+
+
+def test_migration_6_makes_track_similarity_directed(tmp_path):
+    """track_similarity was originally undirected (track_a_id < track_b_id,
+    used to store one row per pair). Top-K is conceptually directed per
+    track, so Migration 6 recreates it as (track_id, neighbor_id) with each
+    track owning its own top-K rows, independent of any other track's."""
+    conn = store.connect(tmp_path / "db.sqlite")
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(track_similarity)")]
+    assert "track_id" in cols
+    assert "neighbor_id" in cols
+    assert "track_a_id" not in cols
+    assert "config_hash" in cols
+    for tid in (1, 2, 3):
+        conn.execute(
+            "INSERT INTO track (id, path, size, mtime, present) "
+            "VALUES (?, ?, 100, 1.0, 1)", (tid, f"/music/t{tid}.mp3"))
+    # a track can own top-K rows independent of its neighbor's own rows
+    conn.execute(
+        "INSERT INTO track_similarity (track_id, neighbor_id, mfcc_norm, "
+        "combined_score) VALUES (1, 2, 0.1, 0.1)")
+    conn.execute(
+        "INSERT INTO track_similarity (track_id, neighbor_id, mfcc_norm, "
+        "combined_score) VALUES (2, 1, 0.1, 0.1)")
+    conn.execute(
+        "INSERT INTO track_similarity (track_id, neighbor_id, mfcc_norm, "
+        "combined_score) VALUES (2, 3, 0.2, 0.2)")
+    rows = conn.execute(
+        "SELECT count(*) c FROM track_similarity WHERE track_id = 2"
+    ).fetchone()["c"]
+    assert rows == 2

@@ -1,4 +1,6 @@
 """Tests for k-means clustering."""
+import json
+
 import numpy as np
 
 from riffle import store
@@ -95,6 +97,48 @@ def test_cluster_missing_features_skipped(tmp_path):
     assert result["n_clusters"] == 3
     no_assignment = conn.execute(
         "SELECT count(*) c FROM cluster_assignment WHERE audio_content_id = 99"
+    ).fetchone()["c"]
+    assert no_assignment == 0
+
+
+def test_cluster_n_clusters_exceeds_tracks_raises_clear_error(tmp_path):
+    """M7: `riffle cluster --n 20` on a library with only 16 tracks (with
+    features) must raise OUR OWN clear error before ever reaching sklearn,
+    not sklearn's raw 'n_samples=16 should be >= n_clusters=20' message."""
+    conn = store.connect(tmp_path / "db.sqlite")
+    _seed_features(conn, n=16)
+    from riffle import cluster
+    import pytest
+    with pytest.raises(ValueError, match="only 16 tracks"):
+        cluster.cluster_tracks(conn, n_clusters=20)
+
+
+def test_cli_cluster_bad_n_reports_cleanly(tmp_path):
+    from typer.testing import CliRunner
+    from riffle.cli import app
+
+    db = str(tmp_path / "db.sqlite")
+    conn = store.connect(tmp_path / "db.sqlite")
+    _seed_features(conn, n=16)
+    conn.close()
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["--db", db, "cluster", "--n", "20"])
+    assert result.exit_code == 1
+    assert "Traceback" not in result.output
+    assert "only 16 tracks" in result.output
+
+
+def test_cluster_excludes_quarantined_content(tmp_path):
+    """M4: a track that's been quarantined (present=0) must not be pulled
+    into clustering just because its audio_features row still exists."""
+    conn = store.connect(tmp_path / "db.sqlite")
+    _seed_features(conn, n=20)
+    conn.execute("UPDATE track SET present = 0, absent_reason = 'quarantined' WHERE id = 1")
+    from riffle import cluster
+    result = cluster.cluster_tracks(conn, n_clusters=3)
+    no_assignment = conn.execute(
+        "SELECT count(*) c FROM cluster_assignment WHERE audio_content_id = 1"
     ).fetchone()["c"]
     assert no_assignment == 0
 
@@ -272,3 +316,34 @@ def test_render_clusters(tmp_path):
     cluster.cluster_tracks(conn, n_clusters=3)
     text = cluster.render_clusters(conn)
     assert "Cluster" in text
+
+
+def test_cli_cluster_as_json_emits_valid_json(tmp_path):
+    """M6: --as-json must emit machine-readable JSON, not just suppress the
+    human-readable report."""
+    from typer.testing import CliRunner
+    from riffle.cli import app
+
+    db = str(tmp_path / "db.sqlite")
+    conn = store.connect(tmp_path / "db.sqlite")
+    _seed_features(conn, n=20)
+    conn.close()
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["--db", db, "cluster", "--n", "3", "--as-json"])
+    assert result.exit_code == 0
+    data = json.loads(result.stdout)
+    assert data["n_clusters"] == 3
+
+
+def test_render_clusters_excludes_quarantined_examples(tmp_path):
+    """M4: a track quarantined AFTER its cluster_run assignment must not
+    show up as an example track in the rendered summary."""
+    conn = store.connect(tmp_path / "db.sqlite")
+    _seed_features(conn, n=20)
+    from riffle import cluster
+    cluster.cluster_tracks(conn, n_clusters=3)
+    conn.execute("UPDATE track SET tag_artist = 'Unmistakable Artist' WHERE id = 1")
+    conn.execute("UPDATE track SET present = 0, absent_reason = 'quarantined' WHERE id = 1")
+    text = cluster.render_clusters(conn)
+    assert "Unmistakable Artist" not in text

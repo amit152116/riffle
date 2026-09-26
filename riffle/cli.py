@@ -170,9 +170,11 @@ def features(as_json: bool = False,
         except ImportError as exc:
             typer.echo(f"error: {exc}", err=True)
             raise typer.Exit(code=1)
-        typer.echo(f"analyzed {result['analyzed']}, cached {result['cached']}, "
-                   f"failed {result['failed']}")
-        if not as_json:
+        if as_json:
+            typer.echo(json.dumps(result))
+        else:
+            typer.echo(f"analyzed {result['analyzed']}, cached {result['cached']}, "
+                       f"failed {result['failed']}")
             typer.echo("")
             typer.echo(features_mod.render_features(conn))
 
@@ -183,9 +185,11 @@ def metadata(as_json: bool = False):
 
     with _session() as conn:
         result = metadata_mod.parse_all(conn)
-        typer.echo(f"parsed {result['parsed']}, cached {result['cached']}, "
-                   f"no_match {result['no_match']}, failed {result['failed']}")
-        if not as_json:
+        if as_json:
+            typer.echo(json.dumps(result))
+        else:
+            typer.echo(f"parsed {result['parsed']}, cached {result['cached']}, "
+                       f"no_match {result['no_match']}, failed {result['failed']}")
             typer.echo("")
             typer.echo(metadata_mod.render_metadata(conn))
 
@@ -226,12 +230,18 @@ def cluster(n: int | None = typer.Option(None, help="Number of clusters"),
     from riffle import cluster as cluster_mod
 
     with _session() as conn:
-        if rebuild:
-            result = cluster_mod.rebuild_clusters(conn, n_clusters=n)
+        try:
+            if rebuild:
+                result = cluster_mod.rebuild_clusters(conn, n_clusters=n)
+            else:
+                result = cluster_mod.cluster_tracks(conn, n_clusters=n)
+        except ValueError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(code=1)
+        if as_json:
+            typer.echo(json.dumps(result))
         else:
-            result = cluster_mod.cluster_tracks(conn, n_clusters=n)
-        typer.echo(f"{result['n_clusters']} clusters, sizes: {result['sizes']}")
-        if not as_json:
+            typer.echo(f"{result['n_clusters']} clusters, sizes: {result['sizes']}")
             typer.echo("")
             typer.echo(cluster_mod.render_clusters(conn))
 
@@ -245,6 +255,9 @@ def build_index(top_k: int = 20, rebuild: bool = False, as_json: bool = False):
             result = similarity.full_rebuild(conn, top_k)
         else:
             result = similarity.build_similarity(conn, top_k)
+        if as_json:
+            typer.echo(json.dumps(result))
+            return
         typer.echo(f"new {result['new_tracks']}, pairs {result['pairs_stored']}, "
                    f"updated {result['existing_updated']}")
 
@@ -277,11 +290,11 @@ def shuffle(seed: str | None = None, n: int = 20,
     with _session() as conn:
         try:
             seed_id = shuffle_mod.resolve_track(conn, seed) if seed else None
+            playlist = shuffle_mod.smart_shuffle(
+                conn, seed_track_id=seed_id, n=n, genre=genre, bpm_range=bpm_range)
         except ValueError as exc:
             typer.echo(f"error: {exc}", err=True)
             raise typer.Exit(code=1)
-        playlist = shuffle_mod.smart_shuffle(
-            conn, seed_track_id=seed_id, n=n, genre=genre, bpm_range=bpm_range)
         if as_json:
             typer.echo(json.dumps(playlist, indent=2))
         else:
