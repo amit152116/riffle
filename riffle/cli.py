@@ -187,6 +187,65 @@ def metadata(as_json: bool = False):
 
 
 @app.command()
+def browse(sort_by: str = "artist", genre: str | None = None,
+           bpm_min: float | None = None, bpm_max: float | None = None,
+           key: str | None = None, cluster: int | None = None,
+           limit: int = 50, as_json: bool = False):
+    from riffle import collection
+
+    bpm_range = (bpm_min, bpm_max) if bpm_min is not None and bpm_max is not None else None
+    with _session() as conn:
+        rows = collection.browse(conn, sort_by=sort_by, genre=genre,
+                                 bpm_range=bpm_range, key=key,
+                                 cluster=cluster, limit=limit)
+        if as_json:
+            typer.echo(json.dumps(rows, indent=2))
+        else:
+            typer.echo(collection.render_browse(rows))
+
+
+@app.command()
+def stats(as_json: bool = False):
+    from riffle import collection
+
+    with _session() as conn:
+        data = collection.stats(conn)
+        if as_json:
+            typer.echo(json.dumps(data, indent=2))
+        else:
+            typer.echo(collection.render_stats(data))
+
+
+@app.command()
+def cluster(n: int | None = typer.Option(None, help="Number of clusters"),
+            rebuild: bool = False, as_json: bool = False):
+    from riffle import cluster as cluster_mod
+
+    with _session() as conn:
+        if rebuild:
+            result = cluster_mod.rebuild_clusters(conn, n_clusters=n)
+        else:
+            result = cluster_mod.cluster_tracks(conn, n_clusters=n)
+        typer.echo(f"{result['n_clusters']} clusters, sizes: {result['sizes']}")
+        if not as_json:
+            typer.echo("")
+            typer.echo(cluster_mod.render_clusters(conn))
+
+
+@app.command(name="build-index")
+def build_index(top_k: int = 20, rebuild: bool = False, as_json: bool = False):
+    from riffle import similarity
+
+    with _session() as conn:
+        if rebuild:
+            result = similarity.full_rebuild(conn, top_k)
+        else:
+            result = similarity.build_similarity(conn, top_k)
+        typer.echo(f"new {result['new_tracks']}, pairs {result['pairs_stored']}, "
+                   f"updated {result['existing_updated']}")
+
+
+@app.command()
 def calibrate(pairs_file: str):
     from riffle import calibrate as cal_mod
     from riffle import match as match_mod
