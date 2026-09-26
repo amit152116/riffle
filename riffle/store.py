@@ -403,6 +403,13 @@ _MIGRATION_7_STATEMENTS: list[str] = [
         FROM quarantine_log""",
     "DROP TABLE quarantine_log",
     "ALTER TABLE quarantine_log_new RENAME TO quarantine_log",
+
+    "CREATE INDEX af_bpm ON audio_features(bpm)",
+    "CREATE INDEX af_key ON audio_features(key_name)",
+    "CREATE INDEX cluster_assignment_run_cluster ON cluster_assignment(run_id, cluster_id)",
+    "CREATE INDEX acoustid_cache_content ON acoustid_cache(audio_content_id)",
+    "CREATE INDEX fingerprint_content ON fingerprint(audio_content_id)",
+    "CREATE INDEX dup_group_run_filter ON dup_group(run_id, tier, formed_by_chain, decision)",
 ]
 
 

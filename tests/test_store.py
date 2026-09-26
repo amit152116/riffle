@@ -341,3 +341,32 @@ def test_migration_7_rebuild_preserves_existing_run_track_rows(tmp_path):
         "SELECT * FROM run_track WHERE run_id = 1 AND track_id = 1"
     ).fetchone()
     assert row["path"] == "/m/a.mp3"
+
+
+def test_migration_7_creates_new_indexes(tmp_path):
+    conn = store.connect(tmp_path / "db.sqlite")
+    index_names = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='index'")}
+    assert {"af_bpm", "af_key", "cluster_assignment_run_cluster",
+            "acoustid_cache_content", "fingerprint_content",
+            "dup_group_run_filter"} <= index_names
+
+
+def test_migration_7_preserves_all_pre_existing_indexes(tmp_path):
+    db_path = tmp_path / "db.sqlite"
+    conn = _connect_at_v6(db_path)
+    pre_existing = {}
+    for table in ("track", "run_track", "pair", "quarantine_log"):
+        pre_existing[table] = {
+            r["name"] for r in conn.execute(f"PRAGMA index_list('{table}')")
+            if not r["name"].startswith("sqlite_autoindex")
+        }
+    conn.close()
+
+    conn = store.connect(db_path)
+    for table, names in pre_existing.items():
+        after = {
+            r["name"] for r in conn.execute(f"PRAGMA index_list('{table}')")
+            if not r["name"].startswith("sqlite_autoindex")
+        }
+        assert names <= after, f"{table} lost an index: {names - after}"
