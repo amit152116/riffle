@@ -294,3 +294,50 @@ def test_migration_7_track_rebuild_preserves_existing_rows(tmp_path):
         "SELECT track_id FROM quality_flag WHERE track_id = 1"
     ).fetchone()
     assert qf is not None  # the FK into track(id=1) still resolves
+
+
+def test_migration_7_declares_run_track_fk(tmp_path):
+    conn = store.connect(tmp_path / "db.sqlite")
+    conn.execute("INSERT INTO match_run (id, status) VALUES (1, 'complete')")
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO run_track (run_id, track_id, path) "
+            "VALUES (1, 999, '/m/a.mp3')")  # track 999 doesn't exist
+
+
+def test_migration_7_declares_pair_fks(tmp_path):
+    conn = store.connect(tmp_path / "db.sqlite")
+    conn.execute("INSERT INTO match_run (id, status) VALUES (1, 'complete')")
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO pair (run_id, a_content_id, b_content_id) "
+            "VALUES (1, 998, 999)")  # neither audio_content exists
+
+
+def test_migration_7_declares_quarantine_log_fks(tmp_path):
+    conn = store.connect(tmp_path / "db.sqlite")
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO quarantine_log (run_id, track_id, group_id, "
+            "src_path, dst_path, state) "
+            "VALUES (999, 999, 999, '/a', '/b', 'moved')")
+
+
+def test_migration_7_rebuild_preserves_existing_run_track_rows(tmp_path):
+    """Pre-existing run_track rows (valid references, written before
+    Migration 7) must survive the rebuild unchanged."""
+    db_path = tmp_path / "db.sqlite"
+    conn = _connect_at_v6(db_path)
+    conn.execute("INSERT INTO match_run (id, status) VALUES (1, 'complete')")
+    conn.execute(
+        "INSERT INTO track (id, path, present) VALUES (1, '/m/a.mp3', 1)")
+    conn.execute(
+        "INSERT INTO run_track (run_id, track_id, path) "
+        "VALUES (1, 1, '/m/a.mp3')")
+    conn.close()
+
+    conn = store.connect(db_path)
+    row = conn.execute(
+        "SELECT * FROM run_track WHERE run_id = 1 AND track_id = 1"
+    ).fetchone()
+    assert row["path"] == "/m/a.mp3"

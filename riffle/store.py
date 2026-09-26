@@ -345,6 +345,64 @@ _MIGRATION_7_STATEMENTS: list[str] = [
     "CREATE INDEX track_content ON track(audio_content_id)",
     "CREATE INDEX track_present ON track(present)",
     "CREATE INDEX track_inode ON track(dev, inode)",
+
+    """CREATE TABLE run_track_new (
+        run_id      INTEGER NOT NULL REFERENCES match_run(id),
+        track_id    INTEGER NOT NULL REFERENCES track(id),
+        path        TEXT NOT NULL,
+        size        INTEGER,
+        mtime       REAL,
+        audio_hash  TEXT,
+        hash_method TEXT,
+        PRIMARY KEY (run_id, track_id)
+    )""",
+    """INSERT INTO run_track_new SELECT run_id, track_id, path, size, mtime,
+        audio_hash, hash_method FROM run_track""",
+    "DROP TABLE run_track",
+    "ALTER TABLE run_track_new RENAME TO run_track",
+
+    """CREATE TABLE pair_new (
+        run_id               INTEGER NOT NULL REFERENCES match_run(id),
+        a_content_id         INTEGER NOT NULL REFERENCES audio_content(id),
+        b_content_id         INTEGER NOT NULL REFERENCES audio_content(id),
+        best_offset          INTEGER,
+        peak_votes           INTEGER,
+        peak_vote_ratio      REAL,
+        matched_span_items   INTEGER,
+        matched_span_seconds REAL,
+        coverage_a           REAL,
+        coverage_b           REAL,
+        mean_bit_error       REAL,
+        segment_count        INTEGER,
+        tier                 INTEGER,
+        verified_direct      INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (run_id, a_content_id, b_content_id),
+        CHECK (a_content_id < b_content_id)
+    )""",
+    """INSERT INTO pair_new SELECT run_id, a_content_id, b_content_id, best_offset,
+        peak_votes, peak_vote_ratio, matched_span_items, matched_span_seconds,
+        coverage_a, coverage_b, mean_bit_error, segment_count, tier,
+        verified_direct FROM pair""",
+    "DROP TABLE pair",
+    "ALTER TABLE pair_new RENAME TO pair",
+
+    """CREATE TABLE quarantine_log_new (
+        id       INTEGER PRIMARY KEY,
+        run_id   INTEGER NOT NULL REFERENCES match_run(id),
+        track_id INTEGER NOT NULL REFERENCES track(id),
+        group_id INTEGER NOT NULL REFERENCES dup_group(id),
+        src_path TEXT NOT NULL,
+        dst_path TEXT NOT NULL,
+        src_hash TEXT,
+        dst_hash TEXT,
+        moved_at TEXT,
+        state    TEXT NOT NULL CHECK (state IN ('moved','failed','undone'))
+    )""",
+    """INSERT INTO quarantine_log_new SELECT id, run_id, track_id, group_id,
+        src_path, dst_path, src_hash, dst_hash, moved_at, state
+        FROM quarantine_log""",
+    "DROP TABLE quarantine_log",
+    "ALTER TABLE quarantine_log_new RENAME TO quarantine_log",
 ]
 
 
