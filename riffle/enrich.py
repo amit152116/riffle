@@ -3,13 +3,13 @@
 Local matching is authoritative. Enrichment may fail, be throttled, or return
 nothing, and dedup results are unchanged either way.
 """
+
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import lru_cache
 
 import numpy as np
@@ -23,8 +23,9 @@ _COMPAT_REFERENCE_SECONDS = 150  # comfortably past the 120s lookup window
 
 
 class RateLimiter:
-    def __init__(self, rate_per_second: float, sleeper=time.sleep,
-                 clock=time.monotonic):
+    def __init__(
+        self, rate_per_second: float, sleeper=time.sleep, clock=time.monotonic
+    ):
         self._interval = 1.0 / rate_per_second
         self._sleep = sleeper
         self._clock = clock
@@ -55,17 +56,15 @@ def encode(raw: np.ndarray, algorithm: int) -> str:
     import chromaprint
 
     return chromaprint.encode_fingerprint(
-        [int(x) for x in raw], fingerprint.internal_algorithm(algorithm),
-        base64=True
+        [int(x) for x in raw], fingerprint.internal_algorithm(algorithm), base64=True
     ).decode("ascii")
 
 
-def lookup_key(algorithm: int, encoded_fp: str, duration: float,
-               meta: str) -> str:
+def lookup_key(algorithm: int, encoded_fp: str, duration: float, meta: str) -> str:
     blob = json.dumps(
-        {"algorithm": algorithm, "fp": encoded_fp,
-         "duration": duration, "meta": meta},
-        sort_keys=True, separators=(",", ":"),
+        {"algorithm": algorithm, "fp": encoded_fp, "duration": duration, "meta": meta},
+        sort_keys=True,
+        separators=(",", ":"),
     )
     return hashlib.sha256(blob.encode()).hexdigest()
 
@@ -89,17 +88,30 @@ def _prefix_slicing_is_valid() -> bool:
     with tempfile.TemporaryDirectory() as tmp:
         ref = Path(tmp) / "ref.flac"
         subprocess.run(
-            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-             "-f", "lavfi",
-             "-i", f"aevalsrc={fingerprint._REFERENCE_TONE_EXPR}:s=44100:"
-                   f"d={_COMPAT_REFERENCE_SECONDS}",
-             "-ac", "1", "-c:a", "flac", str(ref)],
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                f"aevalsrc={fingerprint._REFERENCE_TONE_EXPR}:s=44100:"
+                f"d={_COMPAT_REFERENCE_SECONDS}",
+                "-ac",
+                "1",
+                "-c:a",
+                "flac",
+                str(ref),
+            ],
             check=True,
         )
         full = fingerprint.fingerprint_file(ref).raw
         n = min(len(full), fingerprint.lookup_window_items(LOOKUP_SECONDS))
         native = fingerprint.fingerprint_file(
-            ref, dict(fingerprint.DEFAULT_CONFIG, length=LOOKUP_SECONDS)).raw
+            ref, dict(fingerprint.DEFAULT_CONFIG, length=LOOKUP_SECONDS)
+        ).raw
 
     return encode(full[:n], 2) == encode(native, 2)
 
@@ -113,8 +125,9 @@ def _create_dedicated_artifact(conn, content_id: int) -> tuple[str, int]:
     from pathlib import Path
 
     track = conn.execute(
-        "SELECT path FROM track WHERE audio_content_id = ? AND present = 1 "
-        "LIMIT 1", (content_id,)).fetchone()
+        "SELECT path FROM track WHERE audio_content_id = ? AND present = 1 LIMIT 1",
+        (content_id,),
+    ).fetchone()
     if track is None:
         raise LookupError(f"no present track for content {content_id}")
 
@@ -128,9 +141,16 @@ def _create_dedicated_artifact(conn, content_id: int) -> tuple[str, int]:
         " analyzer_version, config_hash, purpose, algorithm, fp_raw, "
         " fp_length, computed_at) "
         "VALUES (?, ?, ?, ?, 'acoustid_lookup', ?, ?, ?, ?)",
-        (content_id, fingerprint.ANALYZER, version, chash, result.algorithm,
-         store.pack_fingerprint(result.raw), len(result.raw),
-         datetime.now(timezone.utc).isoformat()),
+        (
+            content_id,
+            fingerprint.ANALYZER,
+            version,
+            chash,
+            result.algorithm,
+            store.pack_fingerprint(result.raw),
+            len(result.raw),
+            datetime.now(UTC).isoformat(),
+        ),
     )
     return encode(result.raw, result.algorithm), len(result.raw)
 
@@ -148,21 +168,25 @@ def lookup_fingerprint(conn, content_id: int, config: dict) -> tuple[str, int]:
     lookup_row = conn.execute(
         "SELECT fp_raw, fp_length, algorithm FROM fingerprint "
         "WHERE audio_content_id = ? AND purpose = 'acoustid_lookup' "
-        "ORDER BY id DESC LIMIT 1", (content_id,)).fetchone()
+        "ORDER BY id DESC LIMIT 1",
+        (content_id,),
+    ).fetchone()
     if lookup_row is not None:
-        raw = store.unpack_fingerprint(lookup_row["fp_raw"],
-                                       lookup_row["fp_length"])
+        raw = store.unpack_fingerprint(lookup_row["fp_raw"], lookup_row["fp_length"])
         return encode(raw, lookup_row["algorithm"]), len(raw)
 
     canonical = conn.execute(
         "SELECT fp_raw, fp_length, algorithm FROM fingerprint "
         "WHERE audio_content_id = ? AND purpose = 'canonical' "
-        "ORDER BY id DESC LIMIT 1", (content_id,)).fetchone()
+        "ORDER BY id DESC LIMIT 1",
+        (content_id,),
+    ).fetchone()
     if canonical is None:
         raise LookupError(f"no canonical fingerprint for content {content_id}")
 
-    canonical_raw = store.unpack_fingerprint(canonical["fp_raw"],
-                                             canonical["fp_length"])
+    canonical_raw = store.unpack_fingerprint(
+        canonical["fp_raw"], canonical["fp_length"]
+    )
     n = min(len(canonical_raw), fingerprint.lookup_window_items(LOOKUP_SECONDS))
 
     # A fingerprint short enough to already be within the lookup window needs
@@ -187,8 +211,7 @@ def _default_client(apikey, fp, duration, meta):
 
 def enrich(conn, api_key: str, client=None, sleeper=None) -> dict:
     client = client or _default_client
-    limiter = RateLimiter(ACOUSTID_RATE,
-                          sleeper=sleeper or time.sleep)
+    limiter = RateLimiter(ACOUSTID_RATE, sleeper=sleeper or time.sleep)
 
     looked_up = cached = failed = 0
     rows = conn.execute(
@@ -201,8 +224,9 @@ def enrich(conn, api_key: str, client=None, sleeper=None) -> dict:
 
     for row in rows:
         try:
-            encoded, _ = lookup_fingerprint(conn, row["cid"],
-                                            fingerprint.DEFAULT_CONFIG)
+            encoded, _ = lookup_fingerprint(
+                conn, row["cid"], fingerprint.DEFAULT_CONFIG
+            )
         except (LookupError, fingerprint.FingerprintError):
             # lookup_fingerprint may need to run fpcalc for the dedicated
             # acoustid_lookup artifact; that call can fail the same way any
@@ -212,8 +236,9 @@ def enrich(conn, api_key: str, client=None, sleeper=None) -> dict:
             continue
 
         key = lookup_key(row["algorithm"], encoded, row["duration"], META)
-        if conn.execute("SELECT 1 FROM acoustid_cache WHERE lookup_key = ?",
-                        (key,)).fetchone():
+        if conn.execute(
+            "SELECT 1 FROM acoustid_cache WHERE lookup_key = ?", (key,)
+        ).fetchone():
             cached += 1
             continue
 
@@ -226,11 +251,21 @@ def enrich(conn, api_key: str, client=None, sleeper=None) -> dict:
             failed += 1
             continue
 
+        if not isinstance(response, dict) or response.get("status") != "ok":
+            # pyacoustid's client does not raise for an API-level error (bad
+            # key, rate limit, malformed request) -- it returns a normal
+            # response dict with status="error", the same shape as success.
+            # Caching that would poison the cache: a later run, even with a
+            # corrected key, would see a cache hit and never retry. Observed
+            # live against the real service with an invalid key.
+            failed += 1
+            continue
+
         conn.execute(
             "INSERT INTO acoustid_cache (lookup_key, response_json, fetched_at) "
             "VALUES (?,?,?)",
-            (key, json.dumps(response),
-             datetime.now(timezone.utc).isoformat()))
+            (key, json.dumps(response), datetime.now(UTC).isoformat()),
+        )
         looked_up += 1
 
     return {"looked_up": looked_up, "cached": cached, "failed": failed}

@@ -147,6 +147,35 @@ def test_enrich_failure_does_not_raise(tmp_path):
     assert result["looked_up"] == 0
 
 
+def test_enrich_does_not_cache_an_api_level_error_response(tmp_path):
+    # pyacoustid's client does not raise for an API-level error (bad key,
+    # rate limited, malformed request) -- it returns a normal 200 OK dict
+    # with status="error", the same shape as a real success. Caching that
+    # unconditionally, as observed live against the real service with an
+    # invalid key, poisons the cache: a later run with a corrected key
+    # would see a cache hit and never retry the lookup.
+    conn = store.connect(tmp_path / "db.sqlite")
+    _content_with_fp(conn, tmp_path)
+
+    def error_client(apikey, fp, duration, meta):
+        return {"status": "error", "error": {"code": 4,
+                                             "message": "invalid API key"}}
+
+    result = enrich.enrich(conn, "bad-key", client=error_client,
+                           sleeper=lambda _: None)
+    assert result["failed"] == 1
+    assert result["looked_up"] == 0
+    assert conn.execute(
+        "SELECT count(*) c FROM acoustid_cache").fetchone()["c"] == 0
+
+    # A later run, even with the same client, must retry rather than treat
+    # the poisoned lookup as already done.
+    result2 = enrich.enrich(conn, "bad-key", client=error_client,
+                            sleeper=lambda _: None)
+    assert result2["failed"] == 1
+    assert result2["cached"] == 0
+
+
 def test_prefix_compatibility_check(tmp_path):
     # Documented assumption under test: slicing the canonical array and
     # re-encoding should equal a plain default fpcalc run on the same file.
