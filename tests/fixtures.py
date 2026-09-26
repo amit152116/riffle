@@ -19,10 +19,11 @@ def _run(args: list[str]) -> None:
 
 
 def make_tone(path: Path, seconds: float, freq: int = 440,
-              codec: str = "flac", bitrate: str | None = None) -> Path:
+              codec: str = "flac", bitrate: str | None = None,
+              volume: float = 1.0) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     expr = (
-        f"sin(2*PI*t*({freq}+{freq // 2}*sin(2*PI*t/7)))"
+        f"({volume})*sin(2*PI*t*({freq}+{freq // 2}*sin(2*PI*t/7)))"
         f"*(0.4+0.3*sin(2*PI*t*1.7))"
     )
     args = [

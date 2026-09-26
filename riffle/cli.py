@@ -136,6 +136,29 @@ def enrich(api_key: str = typer.Option(..., envvar="ACOUSTID_API_KEY")):
 
 
 @app.command()
+def health(as_json: bool = False):
+    from riffle import health as health_mod
+
+    with _session() as conn:
+        data = health_mod.health_report(conn)
+    typer.echo(json.dumps(data, indent=2) if as_json
+               else health_mod.render_health(data))
+
+
+@app.command()
+def quality(as_json: bool = False):
+    from riffle import quality as quality_mod
+
+    with _session() as conn:
+        result = quality_mod.quality_scan(conn)
+        typer.echo(f"analyzed {result['analyzed']}, cached {result['cached']}, "
+                   f"failed {result['failed']}, issues {result['issues']}")
+        if not as_json:
+            typer.echo("")
+            typer.echo(quality_mod.render_quality(conn))
+
+
+@app.command()
 def calibrate(pairs_file: str):
     from riffle import calibrate as cal_mod
     from riffle import match as match_mod

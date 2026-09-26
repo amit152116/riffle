@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class LockError(Exception):
@@ -179,7 +179,22 @@ CREATE TABLE quarantine_log (
 );
 """
 
-_MIGRATIONS = [_MIGRATION_1]
+_MIGRATION_2 = """
+CREATE TABLE quality_flag (
+    id               INTEGER PRIMARY KEY,
+    audio_content_id INTEGER NOT NULL REFERENCES audio_content(id),
+    track_id         INTEGER NOT NULL REFERENCES track(id),
+    peak_db          REAL,
+    mean_db          REAL,
+    clipping         INTEGER NOT NULL DEFAULT 0,
+    low_volume       INTEGER NOT NULL DEFAULT 0,
+    silence_sections INTEGER NOT NULL DEFAULT 0,
+    analyzed_at      TEXT,
+    UNIQUE (audio_content_id)
+);
+"""
+
+_MIGRATIONS = [_MIGRATION_1, _MIGRATION_2]
 
 
 def connect(db_path: Path) -> sqlite3.Connection:
