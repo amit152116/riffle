@@ -130,6 +130,52 @@ def test_smart_shuffle_artist_diversity(tmp_path):
     assert back_to_back <= len(playlist) // 3
 
 
+def test_bpm_jump_threshold_is_library_relative():
+    """Library-relative calibration: the BPM-jump soft-penalty threshold
+    should scale with the library's own tempo spread, not a fixed 15 BPM --
+    defaulting to 15.0 only when the fallback spread (60.0) applies."""
+    from riffle import shuffle
+    # default/fallback spread (60.0) -> threshold 15.0, matching the old fixed constant
+    assert shuffle._bpm_jump_threshold(60.0) == 15.0
+    # a narrow-tempo library (spread 10.0, the floor) -> a much smaller jump
+    # already counts as jarring
+    assert shuffle._bpm_jump_threshold(10.0) == 2.5
+
+
+def test_smart_shuffle_uses_library_relative_bpm_jump_penalty(tmp_path):
+    """A narrow-tempo library should penalize a moderate BPM jump that a
+    fixed >15 threshold would have let through unpenalized."""
+    conn = store.connect(tmp_path / "db.sqlite")
+    # 8 tracks all within a narrow tempo band -> IQR floors to 10.0 -> jump
+    # threshold 2.5, so an 8 BPM jump (which the OLD fixed >15 rule would
+    # never penalize) must now be penalized.
+    for i, bpm in enumerate([118, 119, 120, 121, 122, 123, 124, 125], start=1):
+        conn.execute(
+            "INSERT INTO audio_content (id, audio_hash, hash_method, duration) "
+            "VALUES (?, ?, 'streamhash', 200.0)", (i, f"h{i}"))
+        conn.execute(
+            "INSERT INTO track (id, path, size, mtime, audio_content_id, "
+            "tag_artist, tag_genre, present) "
+            "VALUES (?, ?, 1000, 1.0, ?, ?, 'Rock', 1)",
+            (i, f"/music/t{i}.mp3", i, f"Artist{i}"))
+        conn.execute(
+            "INSERT INTO audio_features (audio_content_id, bpm, bpm_confidence, "
+            "key_name, scale, key_strength, loudness_lufs, danceability, energy, "
+            "spectral_centroid, onset_rate, dynamic_complexity, dissonance, zcr, "
+            "mfcc_mean, extractor_version, config_hash, analyzed_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (i, float(bpm), 0.9, "C", "major", 0.8, -14.0, 0.5, 0.5,
+             3000.0, 5.0, 5.0, 0.3, 0.05, store.pack_mfcc(np.random.RandomState(i).randn(13)),
+             "2.1b6", "abc", "2026-01-01"))
+    from riffle import similarity
+    similarity.build_similarity(conn, top_k=7)
+
+    from riffle import shuffle
+    bpm_scale = similarity.compute_bpm_spread(conn)
+    threshold = shuffle._bpm_jump_threshold(bpm_scale)
+    assert threshold < 8.0  # sanity check: an 8 BPM jump WOULD exceed this
+
+
 def test_smart_shuffle_partial_when_few_tracks(tmp_path):
     conn = store.connect(tmp_path / "db.sqlite")
     _seed_library(conn, n=5)

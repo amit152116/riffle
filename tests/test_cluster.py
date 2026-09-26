@@ -257,6 +257,98 @@ def test_cluster_label_from_tracks(tmp_path):
     assert any(w in label for w in valid_words)
 
 
+def test_library_terciles_uses_percentiles(tmp_path):
+    """Library-relative calibration: the BPM/energy label cutoffs should be
+    computed from this library's own distribution, not a fixed number."""
+    conn = store.connect(tmp_path / "db.sqlite")
+    for i, energy in enumerate([0.10, 0.12, 0.14, 0.16, 0.18, 0.20, 0.22, 0.24,
+                                0.26, 0.28], start=1):
+        conn.execute(
+            "INSERT INTO audio_content (id, audio_hash, hash_method) "
+            "VALUES (?, ?, 'streamhash')", (i, f"h{i}"))
+        conn.execute(
+            "INSERT INTO track (id, path, size, mtime, audio_content_id, present) "
+            "VALUES (?, ?, 1000, 1.0, ?, 1)", (i, f"/music/t{i}.mp3", i))
+        conn.execute(
+            "INSERT INTO audio_features (audio_content_id, energy, bpm) "
+            "VALUES (?, ?, 120.0)", (i, energy))
+    from riffle import cluster
+    lo, hi = cluster._library_terciles(conn, "energy", fallback=(0.3, 0.7))
+    # this whole library sits under the old fixed 0.3 cutoff -- the
+    # library-relative terciles must NOT be (0.3, 0.7), they must reflect
+    # the actual 0.10-0.28 spread
+    assert 0.15 <= lo <= 0.19
+    assert 0.21 <= hi <= 0.25
+
+
+def test_library_terciles_falls_back_with_too_few_tracks(tmp_path):
+    conn = store.connect(tmp_path / "db.sqlite")
+    for i, energy in enumerate([0.1, 0.2], start=1):
+        conn.execute(
+            "INSERT INTO audio_content (id, audio_hash, hash_method) "
+            "VALUES (?, ?, 'streamhash')", (i, f"h{i}"))
+        conn.execute(
+            "INSERT INTO track (id, path, size, mtime, audio_content_id, present) "
+            "VALUES (?, ?, 1000, 1.0, ?, 1)", (i, f"/music/t{i}.mp3", i))
+        conn.execute(
+            "INSERT INTO audio_features (audio_content_id, energy, bpm) "
+            "VALUES (?, ?, 120.0)", (i, energy))
+    from riffle import cluster
+    lo, hi = cluster._library_terciles(conn, "energy", fallback=(0.3, 0.7))
+    assert (lo, hi) == (0.3, 0.7)
+
+
+def test_label_cluster_energy_is_library_relative(tmp_path):
+    """Review real-music finding: a library where every track's RMS energy
+    sits under 0.3 (typical for mastered music) must still get differentiated
+    Calm/Moderate/Energetic labels, not have every cluster read 'Calm'."""
+    conn = store.connect(tmp_path / "db.sqlite")
+    rng = np.random.RandomState(1)
+    # cluster 0: low energy within this library's own range (0.10-0.14)
+    for i in range(1, 6):
+        conn.execute(
+            "INSERT INTO audio_content (id, audio_hash, hash_method) "
+            "VALUES (?, ?, 'streamhash')", (i, f"h{i}"))
+        conn.execute(
+            "INSERT INTO track (id, path, size, mtime, audio_content_id, present) "
+            "VALUES (?, ?, 1000, 1.0, ?, 1)", (i, f"/music/t{i}.mp3", i))
+        mfcc = store.pack_mfcc(rng.randn(13))
+        conn.execute(
+            "INSERT INTO audio_features (audio_content_id, bpm, energy, mfcc_mean) "
+            "VALUES (?, 120.0, ?, ?)", (i, 0.10 + i * 0.01, mfcc))
+    # cluster 1: highest energy within this library's own range (0.26-0.30)
+    for i in range(6, 11):
+        conn.execute(
+            "INSERT INTO audio_content (id, audio_hash, hash_method) "
+            "VALUES (?, ?, 'streamhash')", (i, f"h{i}"))
+        conn.execute(
+            "INSERT INTO track (id, path, size, mtime, audio_content_id, present) "
+            "VALUES (?, ?, 1000, 1.0, ?, 1)", (i, f"/music/t{i}.mp3", i))
+        mfcc = store.pack_mfcc(rng.randn(13))
+        conn.execute(
+            "INSERT INTO audio_features (audio_content_id, bpm, energy, mfcc_mean) "
+            "VALUES (?, 120.0, ?, ?)", (i, 0.26 + (i - 6) * 0.01, mfcc))
+
+    from riffle import cluster
+    conn.execute(
+        "INSERT INTO cluster_run (id, n_clusters, n_tracks, created_at) "
+        "VALUES (1, 2, 10, '2026-01-01')")
+    for i in range(1, 6):
+        conn.execute(
+            "INSERT INTO cluster_assignment (run_id, audio_content_id, cluster_id) "
+            "VALUES (1, ?, 0)", (i,))
+    for i in range(6, 11):
+        conn.execute(
+            "INSERT INTO cluster_assignment (run_id, audio_content_id, cluster_id) "
+            "VALUES (1, ?, 1)", (i,))
+
+    label_low = cluster.label_cluster(conn, 0, 1)
+    label_high = cluster.label_cluster(conn, 1, 1)
+    # with a fixed 0.3 cutoff BOTH would read "Calm" -- library-relative
+    # terciles must differentiate them
+    assert label_low != label_high
+
+
 def test_cluster_drift_detection(tmp_path):
     conn = store.connect(tmp_path / "db.sqlite")
     _seed_features(conn, n=20)

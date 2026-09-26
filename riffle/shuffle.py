@@ -31,6 +31,15 @@ def resolve_track(conn, query: str) -> int:
     return rows[0]["id"]
 
 
+def _bpm_jump_threshold(bpm_scale: float) -> float:
+    """A BPM difference above this between consecutive playlist tracks is
+    penalized as a jarring tempo jump. Scales with the library's own BPM
+    spread (see similarity.compute_bpm_spread) instead of a fixed 15 BPM --
+    a fallback spread of 60.0 reproduces the old fixed threshold exactly.
+    """
+    return bpm_scale * 0.25
+
+
 def _get_duplicate_exclusion_set(conn) -> dict[int, set[int]]:
     groups = conn.execute(
         "SELECT gc.group_id, gc.audio_content_id "
@@ -83,6 +92,7 @@ def smart_shuffle(conn, *, seed_track_id: int | None = None,
         return []
 
     dup_exclusions = _get_duplicate_exclusion_set(conn)
+    bpm_jump_threshold = _bpm_jump_threshold(similarity.compute_bpm_spread(conn))
 
     content_siblings: dict[int, set[int]] = {}
     for tid, row in pool.items():
@@ -129,7 +139,7 @@ def smart_shuffle(conn, *, seed_track_id: int | None = None,
             cand_bpm = pool[cand_id].get("bpm")
             curr_bpm = current.get("bpm")
             if not similarity._is_missing_bpm(cand_bpm) and not similarity._is_missing_bpm(curr_bpm):
-                if abs(cand_bpm - curr_bpm) > 15:
+                if abs(cand_bpm - curr_bpm) > bpm_jump_threshold:
                     score += 0.3
 
             cand_key = pool[cand_id].get("key_name")

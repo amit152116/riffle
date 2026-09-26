@@ -115,6 +115,25 @@ def test_combined_score_zero_bpm_treated_as_missing():
     assert score == 0.0
 
 
+def test_score_components_bpm_scale_is_configurable():
+    """Library-relative calibration: bpm_norm's normalization cap should be
+    an adjustable scale (defaulting to the old fixed 60.0), not hardcoded,
+    so callers can pass a library-derived spread instead."""
+    from riffle import similarity
+    fa = {"mfcc_mean": np.ones(13), "bpm": 100.0, "key_name": "C",
+          "scale": "major", "energy": 0.5}
+    fb = {"mfcc_mean": np.ones(13), "bpm": 110.0, "key_name": "C",
+          "scale": "major", "energy": 0.5}
+    # default scale (60.0): 10 BPM diff / 60.0
+    default_comp = similarity.score_components(fa, fb)
+    assert default_comp["bpm_norm"] == 10.0 / 60.0
+    # a narrow library (bpm_scale=20.0): same 10 BPM diff reads as much more
+    # significant, since the library's own tempo variation is small
+    narrow_comp = similarity.score_components(fa, fb, bpm_scale=20.0)
+    assert narrow_comp["bpm_norm"] == 0.5
+    assert narrow_comp["combined_score"] > default_comp["combined_score"]
+
+
 def test_score_components_reports_omitted_norms_as_none():
     from riffle import similarity
     fa = {"mfcc_mean": np.ones(13), "bpm": None, "key_name": None,
@@ -194,6 +213,26 @@ def test_build_similarity_uses_combined_score(tmp_path):
     assert 0.0 <= row["combined_score"] <= 1.0
 
 
+def test_build_similarity_uses_library_relative_bpm_scale(tmp_path):
+    """build_similarity must compute the library's own BPM spread once and
+    use it for bpm_norm, instead of the fixed 60.0 default -- a narrow-tempo
+    library should treat a small BPM difference as significant."""
+    conn = store.connect(tmp_path / "db.sqlite")
+    from riffle import similarity
+    # narrow tempo range: 118..125, IQR is small enough to hit the 10.0 floor
+    for i, bpm in enumerate([118, 119, 120, 121, 122, 123, 124, 125], start=1):
+        _add_track(conn, i, seed=i, bpm=float(bpm))
+    expected_scale = similarity.compute_bpm_spread(conn)
+    assert expected_scale == 10.0  # sanity check on the fixture
+
+    similarity.build_similarity(conn, top_k=7)
+    row = conn.execute(
+        "SELECT bpm_norm FROM track_similarity WHERE track_id = 1 AND neighbor_id = 6"
+    ).fetchone()
+    # track 1 = 118 BPM, track 6 = 123 BPM -> diff 5, scale 10.0 -> bpm_norm 0.5
+    assert row["bpm_norm"] == 0.5
+
+
 def test_build_similarity_incremental(tmp_path):
     conn = store.connect(tmp_path / "db.sqlite")
     _seed_tracks_with_features(conn, n=5)
@@ -223,6 +262,43 @@ def test_build_similarity_incremental(tmp_path):
     assert result["new_tracks"] == 2
     count_after = conn.execute("SELECT count(*) c FROM track_similarity").fetchone()["c"]
     assert count_after > count_before
+
+
+def test_compute_bpm_spread_uses_iqr(tmp_path):
+    """Library-relative calibration: the 'typical BPM difference' scale
+    should reflect this library's actual tempo variation (IQR), not an
+    assumed-universal fixed number."""
+    conn = store.connect(tmp_path / "db.sqlite")
+    from riffle import similarity
+    # 8 tracks with a controlled, known BPM spread: 60,70,80,90,100,110,120,130
+    for i, bpm in enumerate([60, 70, 80, 90, 100, 110, 120, 130], start=1):
+        _add_track(conn, i, seed=i, bpm=float(bpm))
+    spread = similarity.compute_bpm_spread(conn)
+    # IQR of [60..130 step 10] (8 values): Q1=78.75(numpy linear), Q3=111.25 -> IQR ~32.5
+    assert 25.0 <= spread <= 40.0
+
+
+def test_compute_bpm_spread_falls_back_with_too_few_tracks(tmp_path):
+    """With too little data to compute a meaningful IQR, fall back to the
+    old fixed default (60.0) rather than an unstable/degenerate value."""
+    conn = store.connect(tmp_path / "db.sqlite")
+    from riffle import similarity
+    _add_track(conn, 1, seed=1, bpm=100.0)
+    _add_track(conn, 2, seed=2, bpm=105.0)
+    spread = similarity.compute_bpm_spread(conn)
+    assert spread == 60.0
+
+
+def test_compute_bpm_spread_has_a_floor(tmp_path):
+    """A library with near-identical BPM everywhere must not collapse the
+    spread to near-zero, which would make bpm_norm blow up to 1.0 for any
+    tiny, musically-insignificant BPM difference."""
+    conn = store.connect(tmp_path / "db.sqlite")
+    from riffle import similarity
+    for i in range(1, 9):
+        _add_track(conn, i, seed=i, bpm=120.0)
+    spread = similarity.compute_bpm_spread(conn)
+    assert spread >= 10.0
 
 
 def _add_track(conn, cid, seed, bpm=120.0, key="C"):

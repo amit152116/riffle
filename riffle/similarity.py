@@ -74,8 +74,12 @@ def _is_missing_energy(energy) -> bool:
     return energy is None
 
 
+DEFAULT_BPM_SCALE = 60.0
+
+
 def score_components(features_a: dict, features_b: dict,
-                     weights: dict | None = None) -> dict:
+                     weights: dict | None = None,
+                     bpm_scale: float = DEFAULT_BPM_SCALE) -> dict:
     """Per-component normalized distances plus the combined score.
 
     A component whose inputs are missing (BPM is NULL/<=0 -- Essentia writes
@@ -85,6 +89,11 @@ def score_components(features_a: dict, features_b: dict,
     renormalized so the score stays comparable across tracks with different
     amounts of missing data. MFCC and energy are required by the caller's
     query (mfcc_mean IS NOT NULL) and always contribute.
+
+    `bpm_scale` is the BPM difference that counts as "maximally different"
+    -- defaults to a fixed 60.0, but callers indexing a real library should
+    pass `compute_bpm_spread(conn)` instead, since what counts as a big BPM
+    difference depends on the library's own tempo range.
     """
     w = weights or DEFAULT_WEIGHTS
 
@@ -95,7 +104,7 @@ def score_components(features_a: dict, features_b: dict,
     if _is_missing_bpm(bpm_a) or _is_missing_bpm(bpm_b):
         bpm_norm = None
     else:
-        bpm_norm = min(abs(bpm_a - bpm_b) / 60.0, 1.0)
+        bpm_norm = min(abs(bpm_a - bpm_b) / bpm_scale, 1.0)
 
     key_a, key_b = features_a.get("key_name"), features_b.get("key_name")
     if _is_missing_key(key_a) or _is_missing_key(key_b):
@@ -121,8 +130,29 @@ def score_components(features_a: dict, features_b: dict,
 
 
 def combined_score(features_a: dict, features_b: dict,
-                   weights: dict | None = None) -> float:
-    return score_components(features_a, features_b, weights)["combined_score"]
+                   weights: dict | None = None,
+                   bpm_scale: float = DEFAULT_BPM_SCALE) -> float:
+    return score_components(features_a, features_b, weights, bpm_scale)["combined_score"]
+
+
+def compute_bpm_spread(conn) -> float:
+    """The library's own typical BPM variation (interquartile range across
+    present tracks with a valid BPM), used in place of a fixed assumption
+    about what counts as a 'big' tempo difference. Falls back to
+    DEFAULT_BPM_SCALE when there isn't enough data for a stable IQR, and
+    floors the result so a library with almost no tempo variation doesn't
+    make tiny BPM differences read as maximally different.
+    """
+    bpms = sorted(
+        r[0] for r in conn.execute(
+            "SELECT bpm FROM audio_features WHERE bpm IS NOT NULL AND bpm > 0"
+        ).fetchall()
+    )
+    if len(bpms) < 4:
+        return DEFAULT_BPM_SCALE
+    q25, q75 = np.percentile(bpms, [25, 75])
+    iqr = float(q75 - q25)
+    return max(iqr, 10.0)
 
 
 from riffle import store
@@ -168,6 +198,7 @@ def build_similarity(conn, top_k: int = 20) -> dict:
     if not new_ids:
         return {"new_tracks": 0, "pairs_stored": 0, "existing_updated": 0}
 
+    bpm_scale = compute_bpm_spread(conn)
     pairs_stored = 0
     existing_updated = 0
 
@@ -179,7 +210,7 @@ def build_similarity(conn, top_k: int = 20) -> dict:
         for other_id in all_ids:
             if other_id == new_id:
                 continue
-            comp = score_components(fa, all_features[other_id])
+            comp = score_components(fa, all_features[other_id], bpm_scale=bpm_scale)
             scored.append((other_id, comp))
         scored.sort(key=lambda x: x[1]["combined_score"])
         for other_id, comp in scored[:top_k]:
@@ -207,7 +238,7 @@ def build_similarity(conn, top_k: int = 20) -> dict:
         for new_id in new_ids:
             if new_id in current_ids:
                 continue
-            comp = score_components(fe, all_features[new_id])
+            comp = score_components(fe, all_features[new_id], bpm_scale=bpm_scale)
             score = comp["combined_score"]
 
             if count < top_k:

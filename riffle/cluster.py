@@ -285,6 +285,34 @@ def _rebuild_clusters_txn(conn, matrix, content_ids, n_clusters) -> dict:
     return result
 
 
+_TERCILE_COLUMNS = {"bpm", "energy"}
+
+
+def _library_terciles(conn, column: str, fallback: tuple[float, float]) -> tuple[float, float]:
+    """33rd/66th percentile of `column` across all analyzed, present tracks.
+
+    Used in place of a fixed cutoff for cluster labeling: what counts as
+    "low", "medium", or "high" for a feature depends on this library's own
+    distribution, not a universal assumption about "typical" music (e.g.
+    mastered-music RMS energy commonly sits under a fixed 0.3 cutoff, which
+    would label every cluster "Calm"). Falls back to the given fixed values
+    when there's too little data for a stable percentile split.
+    """
+    if column not in _TERCILE_COLUMNS:
+        raise ValueError(f"unsupported tercile column: {column}")
+    values = sorted(
+        r[0] for r in conn.execute(
+            f"SELECT af.{column} FROM audio_features af "
+            f"JOIN track t ON t.audio_content_id = af.audio_content_id "
+            f"WHERE af.{column} IS NOT NULL AND t.present = 1"
+        ).fetchall()
+    )
+    if len(values) < 6:
+        return fallback
+    lo, hi = np.percentile(values, [33, 66])
+    return float(lo), float(hi)
+
+
 def label_cluster(conn, cluster_id: int, run_id: int) -> str:
     rows = conn.execute(
         "SELECT af.bpm, af.energy, af.scale, af.spectral_centroid "
@@ -303,17 +331,21 @@ def label_cluster(conn, cluster_id: int, run_id: int) -> str:
 
     parts = []
     if bpms:
+        bpm_lo, bpm_hi = _library_terciles(conn, "bpm", fallback=(80.0, 120.0))
         med_bpm = sorted(bpms)[len(bpms) // 2]
-        parts.append("Slow" if med_bpm < 80 else "Upbeat" if med_bpm > 120 else "Mid-tempo")
+        parts.append("Slow" if med_bpm < bpm_lo else "Upbeat" if med_bpm > bpm_hi else "Mid-tempo")
     if energies:
+        e_lo, e_hi = _library_terciles(conn, "energy", fallback=(0.3, 0.7))
         med_e = sorted(energies)[len(energies) // 2]
-        parts.append("Calm" if med_e < 0.3 else "Energetic" if med_e > 0.7 else "Moderate")
+        parts.append("Calm" if med_e < e_lo else "Energetic" if med_e > e_hi else "Moderate")
     if scales:
         major_count = sum(1 for s in scales if s == "major")
         parts.append("Major" if major_count > len(scales) / 2 else "Minor")
     if centroids:
         all_sc = conn.execute(
-            "SELECT spectral_centroid FROM audio_features WHERE spectral_centroid IS NOT NULL"
+            "SELECT af.spectral_centroid FROM audio_features af "
+            "JOIN track t ON t.audio_content_id = af.audio_content_id "
+            "WHERE af.spectral_centroid IS NOT NULL AND t.present = 1"
         ).fetchall()
         global_median = sorted(r[0] for r in all_sc)[len(all_sc) // 2]
         med_sc = sorted(centroids)[len(centroids) // 2]
