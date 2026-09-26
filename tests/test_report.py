@@ -25,8 +25,8 @@ def _fixture(tmp_path):
         conn.execute("INSERT INTO group_content (group_id, audio_content_id) "
                      "VALUES (1,?)", (cid,))
         conn.execute("INSERT INTO group_member (group_id, track_id, "
-                     " audio_content_id, is_keeper) VALUES (1,?,?,?)",
-                     (tid, cid, keeper))
+                     " is_keeper) VALUES (1,?,?)",
+                     (tid, keeper))
     return conn
 
 

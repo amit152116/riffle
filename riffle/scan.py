@@ -84,23 +84,19 @@ def _read_tags(path: Path) -> dict:
         f = None
     if f is None:
         return {"title": None, "artist": None, "album": None,
-                "genre": None, "bitrate": None, "completeness": 0}
+                "genre": None, "bitrate": None}
 
     def first(key):
         v = f.get(key)
         return v[0] if v else None
 
-    tags = {
+    return {
         "title": first("title"),
         "artist": first("artist"),
         "album": first("album"),
         "genre": first("genre"),
         "bitrate": getattr(f.info, "bitrate", None),
     }
-    tags["completeness"] = sum(
-        1 for k in ("title", "artist", "album", "genre") if tags[k]
-    )
-    return tags
 
 
 def _content_id(conn, path: Path, ident) -> int:
@@ -175,9 +171,9 @@ def scan(conn, roots: list[Path], verify_hashes: bool = False,
             conn.execute(
                 "INSERT INTO track (path, size, mtime, dev, inode, nlink, "
                 " audio_content_id, bitrate, tag_title, tag_artist, tag_album, "
-                " tag_genre, tag_completeness, last_seen_scan_id, present, "
+                " tag_genre, last_seen_scan_id, present, "
                 " absent_reason, scanned_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,NULL,?) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,1,NULL,?) "
                 "ON CONFLICT(path) DO UPDATE SET "
                 "size=excluded.size, mtime=excluded.mtime, dev=excluded.dev, "
                 "inode=excluded.inode, nlink=excluded.nlink, "
@@ -185,13 +181,12 @@ def scan(conn, roots: list[Path], verify_hashes: bool = False,
                 "bitrate=excluded.bitrate, tag_title=excluded.tag_title, "
                 "tag_artist=excluded.tag_artist, tag_album=excluded.tag_album, "
                 "tag_genre=excluded.tag_genre, "
-                "tag_completeness=excluded.tag_completeness, "
                 "last_seen_scan_id=excluded.last_seen_scan_id, "
                 "present=1, absent_reason=NULL, scanned_at=excluded.scanned_at",
                 (str(path), st.st_size, st.st_mtime, st.st_dev, st.st_ino,
                  st.st_nlink, content_id, tags["bitrate"], tags["title"],
                  tags["artist"], tags["album"], tags["genre"],
-                 tags["completeness"], scan_id, _now()),
+                 scan_id, _now()),
             )
             conn.execute(
                 "UPDATE ingest_error SET resolved_at = ? WHERE path = ?",

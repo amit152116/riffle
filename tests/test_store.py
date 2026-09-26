@@ -237,3 +237,60 @@ def test_migration_7_backfills_artists_from_existing_json(tmp_path):
     ).fetchall()
     assert [(r["position"], r["artist_mbid"]) for r in links] == [
         (0, "mbid-1"), (1, "mbid-2")]
+
+
+def test_migration_7_drops_group_member_audio_content_id(tmp_path):
+    conn = store.connect(tmp_path / "db.sqlite")
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(group_member)")]
+    assert "audio_content_id" not in cols
+
+
+def test_migration_7_tag_completeness_is_generated(tmp_path):
+    conn = store.connect(tmp_path / "db.sqlite")
+    conn.execute(
+        "INSERT INTO track (id, path, tag_title, tag_artist, present) "
+        "VALUES (1, '/m/a.mp3', 'T', 'A', 1)")
+    row = conn.execute(
+        "SELECT tag_completeness FROM track WHERE id = 1"
+    ).fetchone()
+    assert row["tag_completeness"] == 2
+
+
+def test_migration_7_tag_completeness_treats_empty_string_as_missing(tmp_path):
+    """The original Python check was truthy (`if tags[k]`), so a blank-but-
+    present tag doesn't count -- the generated column must match exactly,
+    not just check IS NOT NULL."""
+    conn = store.connect(tmp_path / "db.sqlite")
+    conn.execute(
+        "INSERT INTO track (id, path, tag_title, tag_artist, present) "
+        "VALUES (1, '/m/a.mp3', '', 'A', 1)")
+    row = conn.execute(
+        "SELECT tag_completeness FROM track WHERE id = 1"
+    ).fetchone()
+    assert row["tag_completeness"] == 1
+
+
+def test_migration_7_track_rebuild_preserves_existing_rows(tmp_path):
+    """Realistic pre-Migration-7 data: an existing track row and a row in
+    another table that references it by FK must both survive the rebuild."""
+    db_path = tmp_path / "db.sqlite"
+    conn = _connect_at_v6(db_path)
+    conn.execute(
+        "INSERT INTO track (id, path, tag_title, tag_artist, tag_album, "
+        "tag_genre, tag_completeness, present) "
+        "VALUES (1, '/m/a.mp3', 'T', 'A', 'B', 'G', 4, 1)")
+    conn.execute(
+        "INSERT INTO audio_content (id, audio_hash, hash_method) "
+        "VALUES (1, 'h1', 'streamhash')")
+    conn.execute(
+        "INSERT INTO quality_flag (audio_content_id, track_id, analyzed_at) "
+        "VALUES (1, 1, '2026-01-01')")
+    conn.close()
+
+    conn = store.connect(db_path)
+    row = conn.execute("SELECT * FROM track WHERE id = 1").fetchone()
+    assert row["tag_completeness"] == 4  # recomputed, matches the old stored value
+    qf = conn.execute(
+        "SELECT track_id FROM quality_flag WHERE track_id = 1"
+    ).fetchone()
+    assert qf is not None  # the FK into track(id=1) still resolves

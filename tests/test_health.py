@@ -21,24 +21,24 @@ def _populated_db(tmp_path):
 
     conn.execute(
         "INSERT INTO track (id, path, size, mtime, audio_content_id, bitrate, "
-        "tag_title, tag_artist, tag_album, tag_genre, tag_completeness, present) "
+        "tag_title, tag_artist, tag_album, tag_genre, present) "
         "VALUES (1, '/music/song1.mp3', 5000000, 1000.0, 1, 320000, "
-        "'Song 1', 'Artist 1', 'Album 1', 'Rock', 4, 1)")
+        "'Song 1', 'Artist 1', 'Album 1', 'Rock', 1)")
     conn.execute(
         "INSERT INTO track (id, path, size, mtime, audio_content_id, bitrate, "
-        "tag_title, tag_artist, tag_album, tag_genre, tag_completeness, present) "
+        "tag_title, tag_artist, tag_album, tag_genre, present) "
         "VALUES (2, '/music/song2.flac', 20000000, 1001.0, 2, 1000000, "
-        "'Song 2', 'Artist 2', NULL, NULL, 2, 1)")
+        "'Song 2', 'Artist 2', NULL, NULL, 1)")
     conn.execute(
         "INSERT INTO track (id, path, size, mtime, audio_content_id, bitrate, "
-        "tag_title, tag_artist, tag_album, tag_genre, tag_completeness, present) "
+        "tag_title, tag_artist, tag_album, tag_genre, present) "
         "VALUES (3, '/music/song3.mp3', 6000000, 1002.0, 3, 256000, "
-        "NULL, NULL, NULL, NULL, 0, 1)")
+        "NULL, NULL, NULL, NULL, 1)")
     conn.execute(
         "INSERT INTO track (id, path, size, mtime, audio_content_id, bitrate, "
-        "tag_title, tag_artist, tag_album, tag_genre, tag_completeness, present) "
+        "tag_title, tag_artist, tag_album, tag_genre, present) "
         "VALUES (4, '/music/gone.mp3', 4000000, 999.0, 1, 320000, "
-        "'Gone', 'Artist 1', 'Album 1', 'Rock', 4, 0)")
+        "'Gone', 'Artist 1', 'Album 1', 'Rock', 0)")
 
     conn.execute(
         "INSERT INTO ingest_error (path, stage, message, attempts) "

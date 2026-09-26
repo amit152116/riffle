@@ -307,6 +307,44 @@ _MIGRATION_7_STATEMENTS: list[str] = [
     "artist_mbid TEXT NOT NULL REFERENCES mb_artist(mbid), "
     "PRIMARY KEY (match_id, position))",
     "CREATE INDEX recording_artist_mbid ON mb_recording_artist(artist_mbid)",
+    "ALTER TABLE group_member DROP COLUMN audio_content_id",
+    """CREATE TABLE track_new (
+        id                INTEGER PRIMARY KEY,
+        path              TEXT NOT NULL UNIQUE,
+        size              INTEGER,
+        mtime             REAL,
+        dev               INTEGER,
+        inode             INTEGER,
+        nlink             INTEGER,
+        audio_content_id  INTEGER REFERENCES audio_content(id),
+        bitrate           INTEGER,
+        tag_title         TEXT,
+        tag_artist        TEXT,
+        tag_album         TEXT,
+        tag_genre         TEXT,
+        tag_completeness  INTEGER GENERATED ALWAYS AS (
+            (tag_title  IS NOT NULL AND tag_title  != '') +
+            (tag_artist IS NOT NULL AND tag_artist != '') +
+            (tag_album  IS NOT NULL AND tag_album  != '') +
+            (tag_genre  IS NOT NULL AND tag_genre  != '')
+        ) STORED,
+        last_seen_scan_id INTEGER REFERENCES scan_run(id),
+        present           INTEGER NOT NULL DEFAULT 1,
+        absent_reason     TEXT CHECK (absent_reason IN ('missing','quarantined')),
+        scanned_at        TEXT
+    )""",
+    """INSERT INTO track_new (id, path, size, mtime, dev, inode, nlink,
+        audio_content_id, bitrate, tag_title, tag_artist, tag_album, tag_genre,
+        last_seen_scan_id, present, absent_reason, scanned_at)
+    SELECT id, path, size, mtime, dev, inode, nlink,
+        audio_content_id, bitrate, tag_title, tag_artist, tag_album, tag_genre,
+        last_seen_scan_id, present, absent_reason, scanned_at
+    FROM track""",
+    "DROP TABLE track",
+    "ALTER TABLE track_new RENAME TO track",
+    "CREATE INDEX track_content ON track(audio_content_id)",
+    "CREATE INDEX track_present ON track(present)",
+    "CREATE INDEX track_inode ON track(dev, inode)",
 ]
 
 

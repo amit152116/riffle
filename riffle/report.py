@@ -27,7 +27,7 @@ def report_data(conn, run_id: int, tier: int | None = None) -> dict:
             "       t.bitrate, ac.hash_method, ac.duration "
             "FROM group_member gm "
             "JOIN track t ON t.id = gm.track_id "
-            "JOIN audio_content ac ON ac.id = gm.audio_content_id "
+            "JOIN audio_content ac ON ac.id = t.audio_content_id "
             "WHERE gm.group_id = ? ORDER BY gm.track_id", (g["id"],)
         ):
             if m["hash_method"] == "whole_file":

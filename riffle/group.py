@@ -153,7 +153,7 @@ def _write_group(conn, run_id: int, content_ids: list[int], tier: int,
             (cid,),
         ):
             conn.execute(
-                "INSERT INTO group_member (group_id, track_id, "
-                " audio_content_id, is_keeper) VALUES (?,?,?,0)",
-                (group_id, row["id"], cid))
+                "INSERT INTO group_member (group_id, track_id, is_keeper) "
+                "VALUES (?,?,0)",
+                (group_id, row["id"]))
     return group_id

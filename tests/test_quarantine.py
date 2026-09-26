@@ -33,7 +33,7 @@ def _fixture(tmp_path, approve_it=True):
             (tid, str(path), st.st_size, st.st_mtime,
              hashing.audio_identity(path).audio_hash))
         conn.execute("INSERT INTO group_member (group_id, track_id, "
-                     " audio_content_id, is_keeper) VALUES (1,?,1,?)",
+                     " is_keeper) VALUES (1,?,?)",
                      (tid, is_keeper))
     return conn, lib, keeper, loser
 
@@ -157,7 +157,7 @@ def _two_loser_fixture(tmp_path, loser_a_name="a/song.flac",
             (tid, str(path), st.st_size, st.st_mtime,
              hashing.audio_identity(path).audio_hash))
         conn.execute("INSERT INTO group_member (group_id, track_id, "
-                     " audio_content_id, is_keeper) VALUES (1,?,1,?)",
+                     " is_keeper) VALUES (1,?,?)",
                      (tid, is_keeper))
     return conn, lib, keeper, loser_a, loser_b
 

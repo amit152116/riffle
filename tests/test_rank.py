@@ -25,13 +25,21 @@ def _add(conn, tid, path, bitrate, completeness, mtime, dev=1, inode=None,
             (content_id, f"h{tid}", duration))
     else:
         content_id = 1
+    # tag_completeness is a generated column (Migration 7) -- `completeness`
+    # here selects how many of the four tag_* columns to populate, so the
+    # generated value comes out to exactly the number the test asked for.
+    tag_title = "T" if completeness >= 1 else None
+    tag_artist = "A" if completeness >= 2 else None
+    tag_album = "B" if completeness >= 3 else None
+    tag_genre = "G" if completeness >= 4 else None
     conn.execute(
-        "INSERT INTO track (id, path, bitrate, tag_completeness, mtime, "
-        " dev, inode, audio_content_id, present) VALUES (?,?,?,?,?,?,?,?,1)",
-        (tid, path, bitrate, completeness, mtime, dev, inode or tid,
-         content_id))
-    conn.execute("INSERT INTO group_member (group_id, track_id, "
-                 " audio_content_id) VALUES (1,?,?)", (tid, content_id))
+        "INSERT INTO track (id, path, bitrate, tag_title, tag_artist, "
+        " tag_album, tag_genre, mtime, dev, inode, audio_content_id, "
+        " present) VALUES (?,?,?,?,?,?,?,?,?,?,?,1)",
+        (tid, path, bitrate, tag_title, tag_artist, tag_album, tag_genre,
+         mtime, dev, inode or tid, content_id))
+    conn.execute("INSERT INTO group_member (group_id, track_id) "
+                 "VALUES (1,?)", (tid,))
 
 
 def test_lossless_wins_over_higher_bitrate_lossy(tmp_path):
