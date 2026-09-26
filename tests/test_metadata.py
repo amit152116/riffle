@@ -255,3 +255,43 @@ def test_render_metadata_credits_each_collaborator_individually(tmp_path):
     assert any(line.strip().startswith("A.R. Rahman") for line in lines)
     assert any(line.strip().startswith("Chinmayi") for line in lines)
     assert not any("A.R. Rahman, Chinmayi" in line for line in lines)
+
+
+def test_parse_acoustid_response_artist_without_mbid_fails_loudly():
+    """Every artist that reaches artists_json must have an mbid -- this is
+    what makes mb_recording_artist.artist_mbid NOT NULL (Migration 7) safe.
+    metadata.py's direct a["id"] access (not .get("id")) already enforces
+    this by raising KeyError, caught by parse_all and counted as failed."""
+    import pytest
+    from riffle import metadata
+    response = {
+        "status": "ok",
+        "results": [{"id": "x", "score": 0.9, "recordings": [{
+            "id": "r1", "title": "Song",
+            "artists": [{"name": "No ID Artist"}],  # missing "id"
+            "releasegroups": [],
+        }]}],
+    }
+    with pytest.raises(KeyError):
+        metadata.parse_acoustid_response(json.dumps(response))
+
+
+def test_parse_all_counts_artist_without_mbid_as_failed(tmp_path):
+    conn = store.connect(tmp_path / "db.sqlite")
+    from riffle import metadata
+    response = {
+        "status": "ok",
+        "results": [{"id": "x", "score": 0.9, "recordings": [{
+            "id": "r1", "title": "Song",
+            "artists": [{"name": "No ID Artist"}],
+            "releasegroups": [],
+        }]}],
+    }
+    _insert_cache_row(conn, 1, response)
+    result = metadata.parse_all(conn)
+    assert result["failed"] == 1
+    assert result["parsed"] == 0
+    row = conn.execute(
+        "SELECT * FROM musicbrainz_match WHERE audio_content_id = 1"
+    ).fetchone()
+    assert row is None  # never inserted -- KeyError happened before any insert
