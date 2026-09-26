@@ -6,7 +6,7 @@ import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
-CLIPPING_THRESHOLD_DB = -0.1
+CLIPPING_THRESHOLD_DB = 0.0
 LOW_VOLUME_THRESHOLD_DB = -30.0
 SILENCE_NOISE_DB = -50
 SILENCE_DURATION_S = 5
@@ -29,7 +29,7 @@ def analyze_file(path: Path) -> dict:
     silence_ends = re.findall(r"silence_end:", stderr)
     silence_sections = len(silence_ends)
 
-    clipping = peak_db is not None and peak_db >= CLIPPING_THRESHOLD_DB
+    clipping = peak_db is not None and peak_db > CLIPPING_THRESHOLD_DB
     low_volume = mean_db is not None and mean_db < LOW_VOLUME_THRESHOLD_DB
 
     return {
@@ -46,15 +46,18 @@ def _parse_float(pattern: str, text: str) -> float | None:
     return float(m.group(1)) if m else None
 
 
-def quality_scan(conn) -> dict:
-    """Analyze all present tracks not yet in quality_flag."""
-    rows = conn.execute(
+def quality_scan(conn, limit: int | None = None) -> dict:
+    """Analyze present tracks not yet in quality_flag."""
+    query = (
         "SELECT t.id AS track_id, t.path, t.audio_content_id "
         "FROM track t "
         "LEFT JOIN quality_flag qf ON qf.audio_content_id = t.audio_content_id "
         "WHERE t.present = 1 AND qf.id IS NULL "
         "ORDER BY t.id"
-    ).fetchall()
+    )
+    if limit is not None:
+        query += f" LIMIT {int(limit)}"
+    rows = conn.execute(query).fetchall()
 
     analyzed = failed = issues = cached = 0
 
@@ -117,7 +120,10 @@ def render_quality(conn) -> str:
     silence = conn.execute(
         "SELECT count(*) c FROM quality_flag WHERE silence_sections > 0"
     ).fetchone()["c"]
-    clean = total - clipping - low_vol - silence
+    clean = conn.execute(
+        "SELECT count(*) c FROM quality_flag "
+        "WHERE clipping = 0 AND low_volume = 0 AND silence_sections = 0"
+    ).fetchone()["c"]
 
     lines = ["Audio Quality Report", "=" * 40, ""]
     lines.append(f"Analyzed:            {total}")

@@ -146,11 +146,12 @@ def health(as_json: bool = False):
 
 
 @app.command()
-def quality(as_json: bool = False):
+def quality(as_json: bool = False,
+            limit: int | None = typer.Option(None, help="Max tracks to analyze")):
     from riffle import quality as quality_mod
 
     with _session() as conn:
-        result = quality_mod.quality_scan(conn)
+        result = quality_mod.quality_scan(conn, limit=limit)
         typer.echo(f"analyzed {result['analyzed']}, cached {result['cached']}, "
                    f"failed {result['failed']}, issues {result['issues']}")
         if not as_json:

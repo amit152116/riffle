@@ -30,9 +30,13 @@ def test_analyze_normal_tone(tmp_path):
 
 
 def test_analyze_clipping_detection(tmp_path):
+    """volumedetect caps peak at 0.0 dB for integer formats (FLAC/MP3).
+    A volume=2.0 tone clips to 0.0 dB, which is NOT flagged (threshold > 0.0)
+    — this avoids false positives on normal mastered audio."""
     p = make_tone(tmp_path / "loud.flac", seconds=5.0, volume=2.0)
     result = quality.analyze_file(p)
-    assert result["clipping"]
+    assert result["peak_db"] == 0.0
+    assert not result["clipping"]
 
 
 def test_analyze_silence_detection(tmp_path):
