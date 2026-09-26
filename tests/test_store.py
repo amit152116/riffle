@@ -73,3 +73,22 @@ def test_exclusive_lock_blocks_second_holder(tmp_path):
         with pytest.raises(store.LockError):
             with store.exclusive_lock(p):
                 pass
+
+
+def test_migration_3_creates_audio_features(tmp_path):
+    conn = store.connect(tmp_path / "db.sqlite")
+    tables = [r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'"
+    ).fetchall()]
+    assert "audio_features" in tables
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(audio_features)")]
+    assert "mfcc_mean" in cols
+    assert "config_hash" in cols
+
+
+def test_mfcc_pack_unpack_roundtrip():
+    original = np.random.randn(13).astype(np.float64)
+    blob = store.pack_mfcc(original)
+    assert len(blob) == 13 * 8
+    recovered = store.unpack_mfcc(blob)
+    np.testing.assert_array_almost_equal(original, recovered)

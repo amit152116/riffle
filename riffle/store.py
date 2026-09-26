@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 class LockError(Exception):
@@ -194,7 +194,32 @@ CREATE TABLE quality_flag (
 );
 """
 
-_MIGRATIONS = [_MIGRATION_1, _MIGRATION_2]
+_MIGRATION_3 = """
+CREATE TABLE audio_features (
+    id                 INTEGER PRIMARY KEY,
+    audio_content_id   INTEGER NOT NULL REFERENCES audio_content(id),
+    bpm                REAL,
+    bpm_confidence     REAL,
+    key_name           TEXT,
+    scale              TEXT,
+    key_strength       REAL,
+    loudness_lufs      REAL,
+    danceability       REAL,
+    energy             REAL,
+    spectral_centroid  REAL,
+    onset_rate         REAL,
+    dynamic_complexity REAL,
+    dissonance         REAL,
+    zcr                REAL,
+    mfcc_mean          BLOB,
+    extractor_version  TEXT,
+    config_hash        TEXT,
+    analyzed_at        TEXT,
+    UNIQUE (audio_content_id)
+);
+"""
+
+_MIGRATIONS = [_MIGRATION_1, _MIGRATION_2, _MIGRATION_3]
 
 
 def connect(db_path: Path) -> sqlite3.Connection:
@@ -247,3 +272,11 @@ def unpack_fingerprint(blob: bytes, fp_length: int) -> np.ndarray:
     if len(blob) != fp_length * 4:
         raise ValueError(f"blob is {len(blob)} bytes, expected {fp_length * 4}")
     return np.frombuffer(blob, dtype="<u4").astype(np.uint32)
+
+
+def pack_mfcc(arr: np.ndarray) -> bytes:
+    return np.ascontiguousarray(arr, dtype=np.float64).tobytes()
+
+
+def unpack_mfcc(blob: bytes) -> np.ndarray:
+    return np.frombuffer(blob, dtype=np.float64).copy()
