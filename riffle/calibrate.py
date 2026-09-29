@@ -22,7 +22,15 @@ class CalibrationError(Exception):
 
 
 def load_pairs(path: Path) -> list[dict]:
-    entries = json.loads(Path(path).read_text())
+    path = Path(path)
+    try:
+        text = path.read_text()
+    except OSError:
+        raise CalibrationError(f"pairs file not found: {path}") from None
+    try:
+        entries = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise CalibrationError(f"{path} contains invalid JSON: {exc}") from None
     seen_sets = {e["set"] for e in entries}
     if not REQUIRED_SETS <= seen_sets:
         raise CalibrationError(

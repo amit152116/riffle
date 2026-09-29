@@ -306,7 +306,11 @@ def calibrate(pairs_file: str):
     from riffle import calibrate as cal_mod
     from riffle import match as match_mod
 
-    entries = cal_mod.load_pairs(Path(pairs_file))
+    try:
+        entries = cal_mod.load_pairs(Path(pairs_file))
+    except cal_mod.CalibrationError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
     best, scores = cal_mod.search(entries, match_mod.DEFAULT_MATCH_CONFIG)
     typer.echo(json.dumps({"config": best, "scores": scores}, indent=2,
                           default=str))

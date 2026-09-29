@@ -23,6 +23,32 @@ def test_load_pairs_requires_both_sets(tmp_path):
         calibrate.load_pairs(p)
 
 
+def test_load_pairs_missing_file_raises_calibration_error(tmp_path):
+    """A typo'd or missing path is a usage error, not a crash -- must
+    surface as the same CalibrationError the CLI already knows to catch
+    cleanly, not a raw FileNotFoundError traceback."""
+    with pytest.raises(calibrate.CalibrationError, match="not found"):
+        calibrate.load_pairs(tmp_path / "does_not_exist.json")
+
+
+def test_load_pairs_malformed_json_raises_calibration_error(tmp_path):
+    p = tmp_path / "pairs.json"
+    p.write_text("{not valid json")
+    with pytest.raises(calibrate.CalibrationError, match="invalid JSON"):
+        calibrate.load_pairs(p)
+
+
+def test_cli_calibrate_missing_file_reports_cleanly(tmp_path):
+    from typer.testing import CliRunner
+    from riffle.cli import app
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["calibrate", str(tmp_path / "nope.json")])
+    assert result.exit_code == 1
+    assert "Traceback" not in result.output
+    assert "not found" in result.output.lower()
+
+
 def test_evaluate_scores_a_perfect_config():
     pairs = [{"fp_a": None, "fp_b": None, "expect": 1, "predicted": 1},
              {"fp_a": None, "fp_b": None, "expect": 0, "predicted": 0}]
