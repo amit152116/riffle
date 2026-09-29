@@ -51,7 +51,8 @@ def run_match(conn, config: dict = match.DEFAULT_MATCH_CONFIG) -> int:
         postings = match.build_postings(fps, config)
         item_seconds = fingerprint.item_duration_seconds()
 
-        for a, b in sorted(match.candidate_pairs(postings)):
+        for a, b in sorted(match.candidate_pairs(
+                postings, config.get("min_shared_keys", 1))):
             ev = match.compare(fps[a], fps[b], config, item_seconds)
             if ev.tier == match.TIER_NONE:
                 continue

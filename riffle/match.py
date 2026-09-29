@@ -21,7 +21,8 @@ from dataclasses import dataclass
 import numpy as np
 
 DEFAULT_MATCH_CONFIG = {
-    "align_bits": 12,
+    "align_bits": 24,
+    "min_shared_keys": 20,
     "k_cap": 200,
     "k_cap_fraction": 0.02,
     "m_cap": 8,
@@ -98,14 +99,23 @@ def build_postings(fps: dict[int, np.ndarray], config: dict) -> dict:
     }
 
 
-def candidate_pairs(postings: dict) -> set[tuple[int, int]]:
-    pairs: set[tuple[int, int]] = set()
+def candidate_pairs(postings: dict,
+                    min_shared: int = 1) -> set[tuple[int, int]]:
+    """Pairs of fingerprints sharing at least `min_shared` distinct keys.
+
+    One shared key is weak evidence at library scale: with n fingerprints and
+    a finite key space, chance collisions link almost every pair, and the
+    O(n^2) verification that follows becomes unaffordable. Genuine duplicates
+    share hundreds of keys, so requiring a minimum count discards collisions
+    before any pair is compared.
+    """
+    shared: dict[tuple[int, int], int] = defaultdict(int)
     for entries in postings.values():
         ids = sorted({cid for cid, _ in entries})
         for i, a in enumerate(ids):
             for b in ids[i + 1:]:
-                pairs.add((a, b))
-    return pairs
+                shared[(a, b)] += 1
+    return {pair for pair, n in shared.items() if n >= min_shared}
 
 
 def offset_histogram(fp_a: np.ndarray, fp_b: np.ndarray,
