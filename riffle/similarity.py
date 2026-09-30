@@ -407,3 +407,39 @@ def build_index(conn, method: str = "auto", top_k: int | None = None,
         raise ValueError(f"unknown method {method!r} (auto, embedding, mfcc)")
     result["method"] = method
     return result
+
+
+def load_content_embeddings(conn) -> tuple[list[int], np.ndarray]:
+    """One embedding per audio content that has at least one present track."""
+    rows = conn.execute(
+        "SELECT e.audio_content_id AS content_id, e.vector AS vector "
+        "FROM audio_embedding e WHERE e.model = ? AND EXISTS ("
+        "  SELECT 1 FROM track t WHERE t.audio_content_id = e.audio_content_id "
+        "  AND t.present = 1) ORDER BY e.audio_content_id",
+        (EMBEDDING_MODEL,)).fetchall()
+    ids = [r["content_id"] for r in rows]
+    if not rows:
+        return ids, np.zeros((0, 0))
+    return ids, np.stack([np.frombuffer(r["vector"], dtype="<f4") for r in rows])
+
+
+def knn_affinity(D: np.ndarray, k: int = 10) -> np.ndarray:
+    """Symmetric k-nearest-neighbour graph from a distance matrix.
+
+    Each node connects to its k nearest others; the edge weight falls off with
+    distance relative to the median neighbour distance, and an edge exists if
+    either endpoint lists the other. Spectral clustering of this graph (on the
+    mutual-proximity distance) is how tracks are grouped into clusters.
+    """
+    n = len(D)
+    k = min(k, n - 1)
+    Dn = D.astype(np.float64).copy()
+    np.fill_diagonal(Dn, np.inf)
+    nearest = np.argsort(Dn, axis=1, kind="stable")[:, :k]
+    rows = np.arange(n)[:, None]
+    sigma = max(float(np.median(Dn[rows, nearest])), 1e-12)
+    A = np.zeros((n, n))
+    A[rows, nearest] = np.exp(-(Dn[rows, nearest] / sigma) ** 2)
+    A = np.maximum(A, A.T)
+    np.fill_diagonal(A, 0.0)
+    return A

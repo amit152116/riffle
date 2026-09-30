@@ -44,16 +44,52 @@ duplicate retrieval is easier than on the full library.
   0.56 -> 0.68, confirming the component-scale problem, but it costs duplicate
   retrieval and still trails EffNet.
 
-## 2. Clustering: NOT changed
+## 2. Clustering: adopted after a second round
 
-At equal k (k-means), EffNet clusters match the folder labels better at k >= 8
-(purity 0.81 vs 0.74, NMI 0.20 vs 0.11) and keep known duplicates together
-(0.91-1.00 vs 0.70-0.80), but they are far less stable when songs are added or
-removed (stability ARI 0.08-0.32 vs 0.40-0.71). Ward and GMM did not fix it;
-HDBSCAN after UMAP reached 0.58 with 12% noise points. The embedding space looks
-like a continuous spread, not crisp groups. A cluster list that reshuffles is
-not usable, so clustering stays as is. Untested idea: communities of the
-mutual-proximity neighbour graph, which would change gradually.
+First round: k-means on the embedding matched folder labels better at k >= 8
+(purity 0.81 vs 0.74, NMI 0.20 vs 0.11) and kept duplicates together (0.91-1.00 vs
+0.70-0.80) but was far less stable across subsamples (ARI 0.08-0.32 vs 0.40-0.71);
+Ward and GMM did not fix it; HDBSCAN after UMAP reached 0.58 with 12% noise. That
+ruled out swapping the algorithm as-is.
+
+Second round: spectral clustering of the mutual-proximity neighbour graph
+(`bench/cluster_graph.py`), same k, 416 tracks:
+
+| k | method | purity | NMI | duplicates together | stability | sizes |
+|---|---|---|---|---|---|---|
+| 6 | k-means, current features | 0.727 | 0.111 | 0.77 | 0.63 | 136/5 |
+| 6 | k-means, embedding | 0.749 | 0.181 | 0.91 | 0.17 | 131/22 |
+| 6 | **spectral, kNN graph** | **0.815** | **0.223** | **1.00** | **0.63** | 113/23 |
+| 10 | k-means, current features | 0.747 | 0.111 | 0.75 | 0.45 | 80/1 |
+| 10 | **spectral, kNN graph** | **0.807** | **0.208** | **0.91** | **0.66** | 74/3 |
+
+Average linkage scored the best purity (0.887) but returned one giant cluster
+plus singletons. The number of clusters is **not** auto-detected: eigengap and
+silhouette chose k = 5/19/10/10/5 and 5/7/4/5/16 on the full subset and four
+80% subsamples, and quality is nearly flat across k (purity 0.81-0.86, NMI ~0.21),
+so k is a granularity setting; the default is 8.
+
+Full-library check (1,839 contents) exposed a flaw the subset hid: with 10
+neighbours per node, two of eight clusters had 3 tracks. Variants
+(`bench/cluster_full.py`, purity against folder labels on 1,468 labelled tracks):
+
+| k | variant | sizes | purity | NMI | stability |
+|---|---|---|---|---|---|
+| 8 | 10 neighbours | 459 425 302 291 238 118 3 3 | 0.777 | 0.178 | 0.65 |
+| 8 | **20 neighbours** | 409 302 290 227 192 187 135 97 | **0.801** | 0.169 | 0.60 |
+| 8 | 10 + weak link between all pairs | 820 243 205 ... | 0.689 | 0.096 | 0.62 |
+| 8 | 10, then merge tiny clusters | 6 clusters | 0.775 | 0.178 | 0.65 |
+| 12 | 10 neighbours | ..., 8 4 3 3 | 0.790 | 0.166 | 0.61 |
+| 12 | **20 neighbours** | 348 ... 80 (all >= 80) | **0.828** | 0.172 | **0.66** |
+
+Adopted: neighbours = min(20, max(10, n // 50)) (10 up to ~500 tracks, 20 from
+~1,000), k = 8 by default, new tracks placed by a vote of their 10 nearest
+clustered neighbours so existing assignments never move, `--rebuild` relabels
+new clusters to match the previous run by centroid.
+Limitations: labels are only a language/style proxy; clusters are not named yet
+(the EffNet style probabilities could name them); on the full library the two
+Hindi clusters (459 and 425 tracks) look similar and were not separated by any
+label I have.
 
 ## 3. Shuffle: adopted
 
@@ -83,7 +119,7 @@ it.
 
 ## Implemented
 
-`riffle embed` (parallel, one model per worker), migration 9 (`audio_embedding`),
+`riffle cluster` on embeddings (spectral, above), `riffle embed` (parallel, one model per worker), migration 9 (`audio_embedding`),
 embedding index with mutual proximity (`riffle build-index`, method `auto`,
 100 neighbours per track), shuffle rules above (legacy index keeps the old
 rules), shuffle now includes tracks without tempo/key features, parallel and
@@ -112,7 +148,7 @@ takes 1.7 s (100 neighbours per track).
 
 ## Not done / open
 
-* Clustering on a neighbour-graph community method (idea above).
+* Naming clusters (e.g. from the 400 Discogs style probabilities, which are not stored yet).
 * Embeddings use a 60 s middle excerpt; a longer window was not tested.
 * Recommendation from plays and skips (no listening data exists yet).
 * Results are from one library; rerun `bench/` after major library changes.

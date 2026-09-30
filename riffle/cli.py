@@ -298,16 +298,22 @@ def stats(as_json: bool = False):
 
 
 @app.command()
-def cluster(n: int | None = typer.Option(None, help="Number of clusters"),
-            rebuild: bool = False, as_json: bool = False):
+def cluster(n: int | None = typer.Option(
+                None, help="Number of clusters (default 8 with embeddings)"),
+            rebuild: bool = False, as_json: bool = False,
+            method: str = typer.Option(
+                "auto", help="auto, embedding or kmeans; auto uses embeddings "
+                             "when `riffle embed` has run")):
     from riffle import cluster as cluster_mod
 
     with _session() as conn:
         try:
             if rebuild:
-                result = cluster_mod.rebuild_clusters(conn, n_clusters=n)
+                result = cluster_mod.rebuild_clusters(conn, n_clusters=n,
+                                                      method=method)
             else:
-                result = cluster_mod.cluster_tracks(conn, n_clusters=n)
+                result = cluster_mod.cluster_tracks(conn, n_clusters=n,
+                                                    method=method)
         except ValueError as exc:
             typer.echo(f"error: {exc}", err=True)
             raise typer.Exit(code=1)

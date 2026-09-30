@@ -1,7 +1,10 @@
 """K-means clustering on audio feature vectors."""
 from __future__ import annotations
 
+import json
 import pickle
+import warnings
+from collections import Counter
 from datetime import UTC, datetime
 
 import numpy as np
@@ -9,7 +12,7 @@ from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
 from sklearn.preprocessing import StandardScaler
 
-from riffle import store
+from riffle import similarity, store
 
 FEATURE_COLUMNS = ["bpm", "energy", "danceability", "loudness_lufs",
                    "spectral_centroid", "onset_rate"]
@@ -45,7 +48,7 @@ def _latest_run(conn):
     ).fetchone()
 
 
-def cluster_tracks(conn, n_clusters: int | None = None) -> dict:
+def _cluster_tracks_kmeans(conn, n_clusters: int | None = None) -> dict:
     matrix, content_ids = load_feature_matrix(conn)
     n_tracks = len(content_ids)
 
@@ -203,10 +206,10 @@ from scipy.optimize import linear_sum_assignment
 from scipy.spatial.distance import cdist
 
 
-def rebuild_clusters(conn, n_clusters: int | None = None) -> dict:
+def _rebuild_clusters_kmeans(conn, n_clusters: int | None = None) -> dict:
     matrix, content_ids = load_feature_matrix(conn)
     if len(content_ids) < 15:
-        return cluster_tracks(conn, n_clusters)
+        return _cluster_tracks_kmeans(conn, n_clusters)
 
     conn.execute("BEGIN")
     try:
@@ -282,6 +285,247 @@ def _rebuild_clusters_txn(conn, matrix, content_ids, n_clusters) -> dict:
             "UPDATE cluster_centroid SET label = ? "
             "WHERE run_id = ? AND cluster_id = ?", (lbl, new_run_id, cid))
 
+    return result
+
+
+# --- Clustering on embeddings ----------------------------------------------
+#
+# Benchmarked on 416 real tracks against k-means on riffle's own features at
+# the same k: label purity 0.82 vs 0.73, NMI 0.22 vs 0.11, known duplicates
+# kept together 1.00 vs 0.77, stability across subsamples 0.63 vs 0.63 (0.66
+# vs 0.45 at k=10). k-means on the embeddings themselves was far less stable
+# (0.17-0.21), so the method is spectral clustering of the mutual-proximity
+# neighbour graph. The cluster count is NOT auto-detected: eigengap and
+# silhouette chose wildly different k on subsamples, and quality is flat
+# across k, so it is a granularity setting; 8 balances size and stability.
+
+# Graph density: 10 neighbours suited the 416-track benchmark, but on ~1,800
+# tracks it let tiny groups (3 tracks) break off as clusters. 20 gave balanced
+# clusters (409..97 tracks at k=8), higher purity (0.80 vs 0.78) and, at k=12,
+# better stability (0.66 vs 0.61). Adding a weak link between all pairs made
+# it worse (one 820-track cluster); merging tiny clusters afterwards returns
+# fewer clusters than asked for. So density grows with the library, capped.
+EMBEDDING_CLUSTERS = 8
+EMBEDDING_KNN_MIN = 10
+EMBEDDING_KNN_MAX = 20
+EMBEDDING_KNN_DIVISOR = 50         # neighbours ~ n / 50 between the bounds
+EMBEDDING_VOTE_NEIGHBOURS = 10     # neighbours that place a new track
+
+
+def _graph_neighbours(n: int) -> int:
+    return min(EMBEDDING_KNN_MAX, max(EMBEDDING_KNN_MIN, n // EMBEDDING_KNN_DIVISOR))
+
+
+def _has_embeddings(conn) -> bool:
+    return conn.execute("SELECT count(*) c FROM audio_embedding WHERE model = ?",
+                        (similarity.EMBEDDING_MODEL,)).fetchone()["c"] > 0
+
+
+def _resolve_method(conn, method: str) -> str:
+    if method == "auto":
+        return "embedding" if _has_embeddings(conn) else "kmeans"
+    if method in ("embedding", "kmeans"):
+        return method
+    raise ValueError(f"unknown method {method!r} (auto, embedding, kmeans)")
+
+
+def _run_is_embedding(conn, run_id: int) -> bool:
+    blob = conn.execute("SELECT scaler_params FROM cluster_run WHERE id = ?",
+                        (run_id,)).fetchone()["scaler_params"]
+    try:
+        return json.loads(bytes(blob)).get("method") == "spectral-knn"
+    except (ValueError, TypeError, AttributeError):
+        return False
+
+
+def cluster_tracks(conn, n_clusters: int | None = None, method: str = "auto") -> dict:
+    """Group tracks: embeddings when available (method "auto"), else features."""
+    method = _resolve_method(conn, method)
+    if method == "embedding":
+        return _cluster_tracks_embedding(conn, n_clusters)
+    result = _cluster_tracks_kmeans(conn, n_clusters)
+    result.setdefault("method", "kmeans")
+    return result
+
+
+def rebuild_clusters(conn, n_clusters: int | None = None, method: str = "auto") -> dict:
+    method = _resolve_method(conn, method)
+    if method == "embedding":
+        return _rebuild_embedding_clusters(conn, n_clusters)
+    result = _rebuild_clusters_kmeans(conn, n_clusters)
+    result.setdefault("method", "kmeans")
+    return result
+
+
+def _unit(X: np.ndarray) -> np.ndarray:
+    X = np.asarray(X, dtype=np.float64)
+    return X / (np.linalg.norm(X, axis=1, keepdims=True) + 1e-12)
+
+
+def _read_centroids(conn, run_id: int) -> np.ndarray:
+    rows = conn.execute("SELECT centroid FROM cluster_centroid WHERE run_id = ? "
+                        "ORDER BY cluster_id", (run_id,)).fetchall()
+    return np.array([np.frombuffer(r["centroid"], dtype=np.float64) for r in rows])
+
+
+def _write_embedding_run(conn, ids, U, labels, k: int, knn: int) -> dict:
+    now = datetime.now(UTC).isoformat()
+    meta = {"method": "spectral-knn", "model": similarity.EMBEDDING_MODEL, "knn": knn}
+    conn.execute(
+        "INSERT INTO cluster_run (n_clusters, n_tracks, scaler_params, created_at) "
+        "VALUES (?, ?, ?, ?)",
+        (k, len(ids), json.dumps(meta).encode(), now))
+    run_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    centroids = []
+    for c in range(k):
+        members = U[labels == c]
+        centroid = members.mean(axis=0) if len(members) else np.zeros(U.shape[1])
+        centroids.append(centroid / (np.linalg.norm(centroid) + 1e-12))
+        conn.execute(
+            "INSERT INTO cluster_centroid (run_id, cluster_id, label, centroid, n_tracks) "
+            "VALUES (?, ?, NULL, ?, ?)",
+            (run_id, c, np.asarray(centroid, dtype=np.float64).tobytes(), len(members)))
+    for i, content_id in enumerate(ids):
+        dist = 1.0 - float(U[i] @ centroids[int(labels[i])])
+        conn.execute(
+            "INSERT INTO cluster_assignment (run_id, audio_content_id, cluster_id, "
+            "distance_to_centroid) VALUES (?, ?, ?, ?)",
+            (run_id, content_id, int(labels[i]), max(dist, 0.0)))
+    return {"run_id": run_id, "n_clusters": k,
+            "sizes": [int((labels == c).sum()) for c in range(k)],
+            "labels": [], "method": "embedding"}
+
+
+def _full_embedding_cluster(conn, ids, X, n_clusters) -> dict:
+    from sklearn.cluster import SpectralClustering
+
+    k = EMBEDDING_CLUSTERS if n_clusters is None else n_clusters
+    n = len(ids)
+    if k > n:
+        raise ValueError(f"Cannot cluster into {k} clusters: only {n} tracks "
+                         "have embeddings.")
+    if k < 2:
+        raise ValueError("Need at least 2 clusters")
+    D = similarity.mutual_proximity(similarity.cosine_distance_matrix(X))
+    knn = _graph_neighbours(n)
+    A = similarity.knn_affinity(D, k=knn)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")   # a disconnected graph is fine here
+        labels = SpectralClustering(
+            n_clusters=k, affinity="precomputed", assign_labels="cluster_qr",
+            random_state=42).fit_predict(A)
+    return _write_embedding_run(conn, ids, _unit(X), labels, k, knn)
+
+
+def _cluster_tracks_embedding(conn, n_clusters) -> dict:
+    ids, X = similarity.load_content_embeddings(conn)
+    n = len(ids)
+    if n == 0:
+        return {"run_id": None, "n_clusters": 0, "sizes": [], "labels": [],
+                "method": "embedding"}
+    if n < 15:
+        result = _write_embedding_run(conn, ids, _unit(X), np.zeros(n, dtype=int), 1,
+                                      _graph_neighbours(n))
+        result["labels"] = ["All"]
+        return result
+    latest = _latest_run(conn)
+    if (latest is not None and latest["n_clusters"] != 1
+            and _run_is_embedding(conn, latest["id"])
+            and (n_clusters is None or n_clusters == latest["n_clusters"])):
+        return _assign_new_embeddings(conn, ids, X, latest)
+    return _full_embedding_cluster(conn, ids, X, n_clusters)
+
+
+def _present_sizes(conn, run_id: int, k: int) -> list[int]:
+    counts = {r["cluster_id"]: r["c"] for r in conn.execute(
+        "SELECT ca.cluster_id, count(*) c FROM cluster_assignment ca "
+        "WHERE ca.run_id = ? AND EXISTS (SELECT 1 FROM track t "
+        "  WHERE t.audio_content_id = ca.audio_content_id AND t.present = 1) "
+        "GROUP BY ca.cluster_id", (run_id,))}
+    return [counts.get(c, 0) for c in range(k)]
+
+
+def _assign_new_embeddings(conn, ids, X, latest) -> dict:
+    """Place tracks the run has not seen in the cluster most of their nearest
+    already-clustered neighbours belong to. Existing assignments never move,
+    so browsing clusters does not reshuffle when songs are added."""
+    run_id, k = latest["id"], latest["n_clusters"]
+    assigned = {r["audio_content_id"]: r["cluster_id"] for r in conn.execute(
+        "SELECT audio_content_id, cluster_id FROM cluster_assignment "
+        "WHERE run_id = ?", (run_id,))}
+    known = [i for i, c in enumerate(ids) if c in assigned]
+    new = [i for i, c in enumerate(ids) if c not in assigned]
+    if new and known:
+        U = _unit(X)
+        known_labels = np.array([assigned[ids[i]] for i in known])
+        Uk = U[known]
+        centroids = _unit(_read_centroids(conn, run_id))
+        for i in new:
+            sims = Uk @ U[i]
+            top = np.argsort(-sims, kind="stable")[:EMBEDDING_VOTE_NEIGHBOURS]
+            counts, first = Counter(), {}
+            for rank, j in enumerate(top):
+                counts[int(known_labels[j])] += 1
+                first.setdefault(int(known_labels[j]), rank)
+            best = min(counts, key=lambda c: (-counts[c], first[c]))
+            conn.execute(
+                "INSERT INTO cluster_assignment (run_id, audio_content_id, cluster_id, "
+                "distance_to_centroid) VALUES (?, ?, ?, ?)",
+                (run_id, ids[i], best, max(1.0 - float(U[i] @ centroids[best]), 0.0)))
+    sizes = _present_sizes(conn, run_id, k)
+    for c, size in enumerate(sizes):
+        conn.execute("UPDATE cluster_centroid SET n_tracks = ? "
+                     "WHERE run_id = ? AND cluster_id = ?", (size, run_id, c))
+    return {"run_id": run_id, "n_clusters": k, "sizes": sizes, "labels": [],
+            "method": "embedding"}
+
+
+def _relabel_like_previous(conn, old_centroids, new_run_id: int, k: int) -> None:
+    """Rename the new run's clusters to match the old run's, by centroid."""
+    new_centroids = _read_centroids(conn, new_run_id)
+    cost = cdist(_unit(old_centroids), _unit(new_centroids), metric="cosine")
+    old_idx, new_idx = linear_sum_assignment(cost)
+    mapping = {int(n): int(o) for o, n in zip(old_idx, new_idx)}
+    if all(n == o for n, o in mapping.items()):
+        return
+    for table in ("cluster_centroid", "cluster_assignment"):
+        # Two steps through negative ids: the ids being swapped collide.
+        for new_id in mapping:
+            conn.execute(f"UPDATE {table} SET cluster_id = ? "
+                         "WHERE run_id = ? AND cluster_id = ?",
+                         (-1000 - new_id, new_run_id, new_id))
+        for new_id, old_id in mapping.items():
+            conn.execute(f"UPDATE {table} SET cluster_id = ? "
+                         "WHERE run_id = ? AND cluster_id = ?",
+                         (old_id, new_run_id, -1000 - new_id))
+
+
+def _rebuild_embedding_clusters(conn, n_clusters) -> dict:
+    ids, X = similarity.load_content_embeddings(conn)
+    if len(ids) < 15:
+        return _cluster_tracks_embedding(conn, n_clusters)
+    conn.execute("BEGIN")
+    try:
+        old = _latest_run(conn)
+        old_centroids = None
+        if old is not None and _run_is_embedding(conn, old["id"]):
+            old_centroids = _read_centroids(conn, old["id"])
+        result = _full_embedding_cluster(conn, ids, X, n_clusters)
+        if (old_centroids is not None and len(old_centroids) == result["n_clusters"]
+                and old_centroids.shape[1] == X.shape[1]):
+            _relabel_like_previous(conn, old_centroids, result["run_id"],
+                                   result["n_clusters"])
+            result["sizes"] = _present_sizes(conn, result["run_id"],
+                                             result["n_clusters"])
+        for c in range(result["n_clusters"]):
+            conn.execute(
+                "UPDATE cluster_centroid SET label = ? "
+                "WHERE run_id = ? AND cluster_id = ?",
+                (label_cluster(conn, c, result["run_id"]), result["run_id"], c))
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    conn.execute("COMMIT")
     return result
 
 
