@@ -133,14 +133,22 @@ def offset_histogram(fp_a: np.ndarray, fp_b: np.ndarray,
     keys_a = candidate_key(fp_a, align_bits)
     keys_b = candidate_key(fp_b, align_bits)
 
-    by_key_b: dict[int, list[int]] = defaultdict(list)
-    for pos, key in enumerate(keys_b.tolist()):
-        by_key_b[key].append(pos)
-
-    for pos_a, key in enumerate(keys_a.tolist()):
-        for pos_b in by_key_b.get(key, ()):
-            hist[pos_a - pos_b + n_b] += 1
-    return hist, n_b
+    # Every (pos_a, pos_b) with equal keys votes for delta pos_a - pos_b.
+    # Sorting b's keys turns "positions in b with key k" into a contiguous
+    # run, so all pairs are expanded and counted without a Python loop.
+    order = np.argsort(keys_b, kind="stable")
+    sorted_b = keys_b[order]
+    left = np.searchsorted(sorted_b, keys_a, side="left")
+    counts = np.searchsorted(sorted_b, keys_a, side="right") - left
+    total = int(counts.sum())
+    if total == 0:
+        return hist, n_b
+    pos_a = np.repeat(np.arange(n_a), counts)
+    run_start = np.cumsum(counts) - counts
+    within = np.arange(total) - np.repeat(run_start, counts)
+    pos_b = order[np.repeat(left, counts) + within]
+    hist = np.bincount(pos_a - pos_b + n_b, minlength=n_a + n_b + 1)
+    return hist.astype(np.int64), n_b
 
 
 def best_alignment(hist: np.ndarray, shift: int) -> tuple[int, int, int]:
@@ -149,21 +157,19 @@ def best_alignment(hist: np.ndarray, shift: int) -> tuple[int, int, int]:
     Ties are resolved by the lowest index, scanning low to high, so the result
     does not depend on iteration order or on any random jitter.
     """
-    total = int(hist.sum())
-    best_index = -1
-    best_count = 0
-    for i in range(len(hist)):
-        count = int(hist[i])
-        if count <= 1:
-            continue
-        left_ok = hist[i - 1] <= count if i > 0 else True
-        right_ok = hist[i + 1] <= count if i < len(hist) - 1 else True
-        if left_ok and right_ok and count > best_count:
-            best_count = count
-            best_index = i
-    if best_index < 0:
+    if hist.size == 0:
         return 0, 0, 0
-    return best_index - shift, best_count, total
+    total = int(hist.sum())
+    # The first and last bins count as their own missing neighbour, so the
+    # edge has no left/right constraint.
+    left = np.concatenate(([hist[0]], hist[:-1]))
+    right = np.concatenate((hist[1:], [hist[-1]]))
+    peak = (hist > 1) & (left <= hist) & (right <= hist)
+    if not peak.any():
+        return 0, 0, 0
+    # argmax returns the first maximum, which is the lowest-index tie-break.
+    best_index = int(np.argmax(np.where(peak, hist, 0)))
+    return best_index - shift, int(hist[best_index]), total
 
 
 _POPCOUNT = np.array(

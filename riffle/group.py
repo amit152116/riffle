@@ -80,6 +80,7 @@ def build_groups(conn, run_id: int, config: dict = match.DEFAULT_MATCH_CONFIG,
     }
 
     written = 0
+    actionable_content: set[int] = set()
     for comp in components(edges):
         members = sorted(comp)
         verified: dict[tuple[int, int], int] = {}
@@ -127,9 +128,17 @@ def build_groups(conn, run_id: int, config: dict = match.DEFAULT_MATCH_CONFIG,
         tier = 1 if is_clique else 2
         _write_group(conn, run_id, members, tier,
                      formed_by_chain=0 if is_clique else 1, now=now)
+        if is_clique:
+            actionable_content.update(members)
         written += 1
 
     for comp in _tier0_components(conn):
+        # An actionable fuzzy group already holds every present track of its
+        # contents, so a second tier-0 group over the same files would rank
+        # and apply them under an independent keeper. A chain group can never
+        # authorize quarantine, so it must not suppress the tier-0 group.
+        if comp <= actionable_content:
+            continue
         _write_group(conn, run_id, sorted(comp), tier=0,
                      formed_by_chain=0, now=now)
         written += 1

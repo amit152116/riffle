@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from riffle import (fingerprint, group, matchrun, quarantine, rank,
                       report, scan, store, approve)
@@ -26,12 +27,20 @@ def _full_run(tmp_path, name="db.sqlite"):
     return conn, lib, run_id
 
 
-def test_retagged_copy_is_tier_0_and_the_transcode_is_tier_1(tmp_path):
+def test_retagged_copy_and_transcode_share_one_tier_1_group(tmp_path):
+    # The exact (retagged) copy is inside the transcode's fuzzy group, so it
+    # gets no tier-0 group of its own: one connected set, one keeper.
     conn, lib, run_id = _full_run(tmp_path)
     tiers = sorted(r["tier"] for r in conn.execute(
         "SELECT tier FROM dup_group WHERE run_id = ?", (run_id,)))
-    assert 0 in tiers
+    assert 0 not in tiers
     assert 1 in tiers
+    names = {Path(r["path"]).name for r in conn.execute(
+        "SELECT t.path FROM group_member gm "
+        "JOIN dup_group g ON g.id = gm.group_id "
+        "JOIN track t ON t.id = gm.track_id "
+        "WHERE g.run_id = ? AND g.tier = 1", (run_id,))}
+    assert {"song.flac", "song-copy.flac", "song.mp3"} <= names
 
 
 def test_the_edit_never_authorizes_quarantine(tmp_path):
