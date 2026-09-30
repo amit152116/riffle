@@ -89,6 +89,27 @@ embedding index with mutual proximity (`riffle build-index`, method `auto`,
 rules), shuffle now includes tracks without tempo/key features, parallel and
 deduplicated `riffle features`, beat-tracker failure no longer discards a track.
 
+## Validation on the full library (1,848 tracks)
+
+Embeddings for all 1,839 audio contents (0 failures); `riffle build-index`
+takes 1.7 s (100 neighbours per track).
+
+* Nearest neighbours are the same recording first (distance ~0.00-0.03), then
+  same-style songs: Punjabi stays with Punjabi, *Rockstar: Tum Ho* pulls
+  Bollywood romantic songs.
+* Hubness on the real index: 0.9% of tracks appear in nobody's top 10 (max 36
+  appearances, mean 10).
+* First shuffles played an mp3 and its YouTube copy back to back (`Gabbroo`,
+  `Oh Kyu Ni Jaan Ske`): dedup deliberately does not group same-song edits.
+  Embedding-space distances: same-recording pairs median 0.009 (90th pct 0.096,
+  99th 0.27), edited same-song pairs median 0.018, every track's nearest
+  neighbour median 0.139. An audit of the 55 pairs under 0.05 that are not
+  known duplicates found 19 of 22 sampled were the same song (the rest were
+  compilations or lookalikes). The shuffle now skips any track within 0.05 of
+  one already played: 0 repeated songs in 60 real playlists (11,400 pairs).
+  Recall is partial by design (86% of same-recording pairs, 76% of edits, 45%
+  of partial matches fall under 0.05).
+
 ## Not done / open
 
 * Clustering on a neighbour-graph community method (idea above).

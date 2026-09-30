@@ -363,3 +363,40 @@ def test_legacy_index_keeps_the_old_rules(tmp_path):
     _link(conn, "legacy", 1, 3, 0.11)
     playlist = shuffle.smart_shuffle(conn, seed_track_id=1, n=2)
     assert playlist[1]["track_id"] == 2   # no octave logic, so nearest wins
+
+
+# --- never play the same song twice ----------------------------------------
+# On a real library the shuffle played the mp3 and the YouTube copy of one
+# song back to back. Copies of one song sit within ~0.05 cosine distance of
+# each other (audit of the 55 unlisted pairs under 0.05: 19 of 22 sampled were
+# the same song, the rest compilations); the index stores that distance / 2.
+
+def test_embedding_shuffle_skips_a_near_copy_of_the_current_track(tmp_path):
+    from riffle import shuffle
+    conn = store.connect(tmp_path / "db.sqlite")
+    h = _emb_lib(conn, [(120.0, "C", "A"), (120.0, "C", "B"), (120.0, "C", "C")])
+    _link(conn, h, 1, 2, 0.01)   # a copy of track 1 (cosine distance 0.02)
+    _link(conn, h, 1, 3, 0.08)
+    playlist = shuffle.smart_shuffle(conn, seed_track_id=1, n=2)
+    assert playlist[1]["track_id"] == 3
+
+
+def test_embedding_shuffle_skips_near_copies_of_any_earlier_track(tmp_path):
+    from riffle import shuffle
+    conn = store.connect(tmp_path / "db.sqlite")
+    h = _emb_lib(conn, [(120.0, "C", "A"), (120.0, "C", "B"),
+                        (120.0, "C", "C"), (120.0, "C", "D")])
+    _link(conn, h, 1, 2, 0.01)   # 2 is a copy of the seed
+    _link(conn, h, 1, 3, 0.08)
+    _link(conn, h, 3, 2, 0.05)   # 3's own list would happily offer 2 ...
+    _link(conn, h, 3, 4, 0.12)   # ... ahead of 4
+    playlist = shuffle.smart_shuffle(conn, seed_track_id=1, n=3)
+    assert [t["track_id"] for t in playlist] == [1, 3, 4]
+
+
+def test_legacy_index_does_not_apply_the_copy_rule(tmp_path):
+    from riffle import shuffle
+    conn = store.connect(tmp_path / "db.sqlite")
+    _emb_lib(conn, [(120.0, "C", "A"), (120.0, "C", "B")])
+    _link(conn, "legacy", 1, 2, 0.01)
+    assert shuffle.smart_shuffle(conn, seed_track_id=1, n=2)[1]["track_id"] == 2

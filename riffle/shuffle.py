@@ -56,6 +56,21 @@ def _bpm_jump(a: float, b: float) -> float:
     return min(abs(a - b), abs(2 * a - b), abs(a - 2 * b))
 
 
+# Copies of one song (an mp3 and a YouTube rip, or two edits) sit within about
+# 0.05 cosine distance of each other. Audit on a real library: 19 of 22
+# sampled unlisted pairs under 0.05 were the same song, the rest compilations
+# or lookalikes, where skipping a candidate costs nothing. The index stores
+# half the cosine distance in mfcc_norm.
+SAME_SONG_DISTANCE = 0.05
+
+
+def _near_copies(conn, track_id: int) -> set[int]:
+    return {r["neighbor_id"] for r in conn.execute(
+        "SELECT neighbor_id FROM track_similarity "
+        "WHERE track_id = ? AND mfcc_norm < ?",
+        (track_id, SAME_SONG_DISTANCE / 2))}
+
+
 def _uses_embedding_index(conn) -> bool:
     return conn.execute(
         "SELECT 1 FROM track_similarity WHERE config_hash = ? LIMIT 1",
@@ -134,11 +149,13 @@ def smart_shuffle(conn, *, seed_track_id: int | None = None,
     else:
         seed = random.choice(list(pool.keys()))
 
+    embedding_mode = _uses_embedding_index(conn)
+
     playlist = [pool[seed]]
     used_ids: set[int] = {seed}
     used_ids.update(_exclusions_for(seed))
-
-    embedding_mode = _uses_embedding_index(conn)
+    if embedding_mode:
+        used_ids.update(_near_copies(conn, seed))
 
     for _ in range(n - 1):
         current = playlist[-1]
@@ -204,6 +221,8 @@ def smart_shuffle(conn, *, seed_track_id: int | None = None,
         playlist.append(pool[best_candidate])
         used_ids.add(best_candidate)
         used_ids.update(_exclusions_for(best_candidate))
+        if embedding_mode:
+            used_ids.update(_near_copies(conn, best_candidate))
 
     return playlist
 
