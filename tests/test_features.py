@@ -70,12 +70,16 @@ def test_extraction_config_hash_deterministic():
 
 def test_essentia_import_error(monkeypatch):
     """Review Focus #1: clear message when essentia not installed."""
-    import importlib
     import sys
+    import riffle
+    from riffle import features as original
+    # Restore both the sys.modules entry and the package attribute afterwards:
+    # leaving a second copy of riffle.features behind breaks pickling of its
+    # functions in later multiprocess tests.
+    monkeypatch.setattr(riffle, "features", original)
+    monkeypatch.delitem(sys.modules, "riffle.features")
     monkeypatch.setitem(sys.modules, "essentia", None)
     monkeypatch.setitem(sys.modules, "essentia.standard", None)
-    if "riffle.features" in sys.modules:
-        del sys.modules["riffle.features"]
     from riffle import features
     import pytest
     with pytest.raises((ImportError, ModuleNotFoundError)):
@@ -200,7 +204,7 @@ def test_cli_features_reports_missing_essentia_cleanly(tmp_path, monkeypatch):
     from riffle.cli import app
     from riffle import features as features_mod
 
-    def _boom(conn, limit=None):
+    def _boom(conn, limit=None, **_kwargs):
         raise ImportError("Essentia is not installed. Install it with: pip install essentia")
 
     monkeypatch.setattr(features_mod, "feature_scan", _boom)
@@ -212,3 +216,98 @@ def test_cli_features_reports_missing_essentia_cleanly(tmp_path, monkeypatch):
     assert result.exit_code == 1
     assert "essentia" in result.output.lower()
     assert "Traceback" not in result.stdout
+
+
+def test_feature_scan_workers_give_identical_results(tmp_path):
+    from riffle import features
+
+    def build(name):
+        conn = store.connect(tmp_path / f"{name}.sqlite")
+        for i, freq in enumerate((330, 440, 550), start=1):
+            p = make_tone(tmp_path / f"{name}_{i}.flac", seconds=8.0,
+                          freq=freq, volume=0.5)
+            _db_with_track(conn, tmp_path, p, cid=i)
+        return conn
+
+    def snapshot(conn):
+        return {r["audio_content_id"]: (round(r["bpm"], 6), r["key_name"],
+                                        r["scale"], bytes(r["mfcc_mean"]))
+                for r in conn.execute("SELECT * FROM audio_features")}
+
+    serial = build("serial")
+    assert features.feature_scan(serial, workers=1)["analyzed"] == 3
+    parallel = build("parallel")
+    assert features.feature_scan(parallel, workers=3)["analyzed"] == 3
+    assert snapshot(serial) == snapshot(parallel)
+
+
+def test_feature_scan_analyzes_shared_audio_once(tmp_path):
+    # Two files with the same audio share one audio_content row; analysing
+    # both would just do the same work twice.
+    conn = store.connect(tmp_path / "db.sqlite")
+    first = make_tone(tmp_path / "a.flac", seconds=8.0, volume=0.5)
+    copy = tmp_path / "copy.flac"
+    copy.write_bytes(first.read_bytes())
+    _db_with_track(conn, tmp_path, first, cid=1)
+    st = copy.stat()
+    conn.execute(
+        "INSERT INTO track (id, path, size, mtime, audio_content_id, "
+        "bitrate, present) VALUES (2, ?, ?, ?, 1, 1000000, 1)",
+        (str(copy), st.st_size, st.st_mtime))
+    from riffle import features
+    assert features.feature_scan(conn)["analyzed"] == 1
+
+
+def test_feature_scan_counts_failures_with_workers(tmp_path):
+    conn = store.connect(tmp_path / "db.sqlite")
+    good = make_tone(tmp_path / "ok.flac", seconds=8.0, volume=0.5)
+    _db_with_track(conn, tmp_path, good, cid=1)
+    conn.execute("INSERT INTO audio_content (id, audio_hash, hash_method) "
+                 "VALUES (2, 'h2', 'streamhash')")
+    conn.execute("INSERT INTO track (id, path, size, mtime, audio_content_id, "
+                 "present) VALUES (2, '/nonexistent/x.mp3', 1, 1.0, 2, 1)")
+    from riffle import features
+    result = features.feature_scan(conn, workers=2)
+    assert result["analyzed"] == 1
+    assert result["failed"] == 1
+
+
+def test_cli_features_accepts_workers(tmp_path):
+    from typer.testing import CliRunner
+    from riffle.cli import app
+
+    lib = tmp_path / "lib"
+    p = make_tone(lib / "song.flac", seconds=5.0, volume=0.5)
+    db = str(tmp_path / "db.sqlite")
+    conn = store.connect(tmp_path / "db.sqlite")
+    _db_with_track(conn, tmp_path, p)
+    conn.close()
+    result = CliRunner().invoke(
+        app, ["--db", db, "features", "--as-json", "--workers", "2"])
+    assert result.exit_code == 0, result.stdout
+    assert json.loads(result.stdout)["analyzed"] == 1
+
+
+def test_a_beat_tracker_failure_does_not_discard_the_other_features(tmp_path, monkeypatch):
+    # Essentia's beat tracker raises on some real files ("While trying to
+    # push item into source OnsetDetectionGlobal::onsetDetections", about
+    # 1.4% of one library). Everything else about the track is still usable;
+    # tempo is stored as 0.0, which similarity already treats as missing.
+    import essentia.standard as es
+    from riffle import features
+
+    class Broken:
+        def __init__(self, **kwargs):
+            pass
+
+        def __call__(self, audio):
+            raise RuntimeError("In RhythmExtractor2013.compute: While trying to push item")
+
+    monkeypatch.setattr(es, "RhythmExtractor2013", Broken)
+    p = make_tone(tmp_path / "song.flac", seconds=8.0, volume=0.5)
+    result = features.extract_file(p)
+    assert result["bpm"] == 0.0
+    assert result["bpm_confidence"] == 0.0
+    assert result["key_name"] in ("C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B")
+    assert result["mfcc_mean"].shape == (13,)
+    assert 0.0 <= result["energy"] <= 1.0

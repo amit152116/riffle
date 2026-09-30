@@ -463,3 +463,19 @@ def test_migration_7_dangling_reference_fails_loudly_and_rolls_back(tmp_path):
     conn.row_factory = sqlite3.Row
     version = conn.execute("SELECT version FROM schema_version").fetchone()["version"]
     assert version == 6
+
+
+def test_migration_9_adds_audio_embedding(tmp_path):
+    conn = store.connect(tmp_path / "db.sqlite")
+    assert conn.execute("SELECT version FROM schema_version"
+                        ).fetchone()["version"] == store.SCHEMA_VERSION >= 9
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(audio_embedding)")}
+    assert cols == {"audio_content_id", "model", "dim", "vector", "computed_at"}
+    # one embedding per (audio, model)
+    conn.execute("INSERT INTO audio_content (id, audio_hash, hash_method) "
+                 "VALUES (1, 'h', 'streamhash')")
+    conn.execute("INSERT INTO audio_embedding VALUES (1, 'm', 2, x'00', 'now')")
+    import sqlite3
+    import pytest
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute("INSERT INTO audio_embedding VALUES (1, 'm', 2, x'00', 'now')")

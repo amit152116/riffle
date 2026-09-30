@@ -49,10 +49,16 @@ def extract_file(path) -> dict:
     sr = EXTRACTION_CONFIG["sample_rate"]
     audio = es.MonoLoader(filename=str(path), sampleRate=sr)()
 
-    bpm, ticks, confidence, _, _ = es.RhythmExtractor2013(
-        method=EXTRACTION_CONFIG["rhythm_method"]
-    )(audio)
-    bpm = _correct_bpm(float(bpm))
+    try:
+        bpm, ticks, confidence, _, _ = es.RhythmExtractor2013(
+            method=EXTRACTION_CONFIG["rhythm_method"]
+        )(audio)
+        bpm = _correct_bpm(float(bpm))
+    except RuntimeError:
+        # The beat tracker raises on some real files. Keep everything else;
+        # 0.0 is the value Essentia itself reports for beatless audio, and
+        # similarity already treats it as "tempo unknown".
+        bpm, confidence = 0.0, 0.0
 
     key, scale, strength = es.KeyExtractor()(audio)
 
@@ -125,15 +131,64 @@ def _check_essentia_available() -> None:
         ) from exc
 
 
-def feature_scan(conn, limit: int | None = None) -> dict:
+def _extract_or_error(path: str):
+    """Worker entry point (module level so it can be pickled).
+
+    Returns (result, None) or (None, message); an exception must not escape
+    into the pool and abort every other file.
+    """
+    try:
+        return extract_file(path), None
+    except Exception as exc:  # noqa: BLE001 - any decode/analysis failure
+        return None, f"{type(exc).__name__}: {exc}"
+
+
+def _store_features(conn, content_id: int, result: dict) -> None:
+    conn.execute(
+        "INSERT INTO audio_features (audio_content_id, bpm, bpm_confidence, "
+        "key_name, scale, key_strength, loudness_lufs, danceability, energy, "
+        "spectral_centroid, onset_rate, dynamic_complexity, dissonance, zcr, "
+        "mfcc_mean, extractor_version, config_hash, analyzed_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+        "ON CONFLICT(audio_content_id) DO UPDATE SET "
+        "bpm=excluded.bpm, bpm_confidence=excluded.bpm_confidence, "
+        "key_name=excluded.key_name, scale=excluded.scale, "
+        "key_strength=excluded.key_strength, loudness_lufs=excluded.loudness_lufs, "
+        "danceability=excluded.danceability, energy=excluded.energy, "
+        "spectral_centroid=excluded.spectral_centroid, onset_rate=excluded.onset_rate, "
+        "dynamic_complexity=excluded.dynamic_complexity, dissonance=excluded.dissonance, "
+        "zcr=excluded.zcr, mfcc_mean=excluded.mfcc_mean, "
+        "extractor_version=excluded.extractor_version, config_hash=excluded.config_hash, "
+        "analyzed_at=excluded.analyzed_at",
+        (content_id, result["bpm"], result["bpm_confidence"],
+         result["key_name"], result["scale"], result["key_strength"],
+         result["loudness_lufs"], result["danceability"], result["energy"],
+         result["spectral_centroid"], result["onset_rate"],
+         result["dynamic_complexity"], result["dissonance"], result["zcr"],
+         store.pack_mfcc(result["mfcc_mean"]),
+         result["extractor_version"], result["config_hash"],
+         datetime.now(UTC).isoformat()),
+    )
+
+
+def feature_scan(conn, limit: int | None = None, workers: int = 1,
+                 on_progress=None) -> dict:
+    """Analyse present audio that has no features yet.
+
+    Files sharing one audio_content row (identical audio) are analysed once.
+    With `workers` > 1 extraction runs in separate processes (analysis is CPU
+    bound and roughly 10-25 s per track); results are written here, one at a
+    time, as they complete, so an interrupted scan keeps its progress.
+    """
     _check_essentia_available()
 
     query = (
-        "SELECT t.id AS track_id, t.path, t.audio_content_id "
+        "SELECT MIN(t.id) AS track_id, t.path AS path, "
+        "       t.audio_content_id AS audio_content_id "
         "FROM track t "
         "LEFT JOIN audio_features af ON af.audio_content_id = t.audio_content_id "
         "WHERE t.present = 1 AND af.id IS NULL "
-        "ORDER BY t.id"
+        "GROUP BY t.audio_content_id ORDER BY MIN(t.id)"
     )
     if limit is not None:
         query += f" LIMIT {int(limit)}"
@@ -146,43 +201,39 @@ def feature_scan(conn, limit: int | None = None) -> dict:
     ).fetchone()["c"]
 
     analyzed = failed = 0
+    todo = []
     for row in rows:
-        path = Path(row["path"])
-        if not path.exists():
+        if Path(row["path"]).exists():
+            todo.append(row)
+        else:
             failed += 1
-            continue
-        try:
-            result = extract_file(path)
-        except Exception:
-            failed += 1
-            continue
 
-        conn.execute(
-            "INSERT INTO audio_features (audio_content_id, bpm, bpm_confidence, "
-            "key_name, scale, key_strength, loudness_lufs, danceability, energy, "
-            "spectral_centroid, onset_rate, dynamic_complexity, dissonance, zcr, "
-            "mfcc_mean, extractor_version, config_hash, analyzed_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
-            "ON CONFLICT(audio_content_id) DO UPDATE SET "
-            "bpm=excluded.bpm, bpm_confidence=excluded.bpm_confidence, "
-            "key_name=excluded.key_name, scale=excluded.scale, "
-            "key_strength=excluded.key_strength, loudness_lufs=excluded.loudness_lufs, "
-            "danceability=excluded.danceability, energy=excluded.energy, "
-            "spectral_centroid=excluded.spectral_centroid, onset_rate=excluded.onset_rate, "
-            "dynamic_complexity=excluded.dynamic_complexity, dissonance=excluded.dissonance, "
-            "zcr=excluded.zcr, mfcc_mean=excluded.mfcc_mean, "
-            "extractor_version=excluded.extractor_version, config_hash=excluded.config_hash, "
-            "analyzed_at=excluded.analyzed_at",
-            (row["audio_content_id"], result["bpm"], result["bpm_confidence"],
-             result["key_name"], result["scale"], result["key_strength"],
-             result["loudness_lufs"], result["danceability"], result["energy"],
-             result["spectral_centroid"], result["onset_rate"],
-             result["dynamic_complexity"], result["dissonance"], result["zcr"],
-             store.pack_mfcc(result["mfcc_mean"]),
-             result["extractor_version"], result["config_hash"],
-             datetime.now(UTC).isoformat()),
-        )
-        analyzed += 1
+    def record(row, outcome):
+        nonlocal analyzed, failed
+        result, error = outcome
+        if error is not None:
+            failed += 1
+        else:
+            _store_features(conn, row["audio_content_id"], result)
+            analyzed += 1
+        if on_progress is not None:
+            on_progress(analyzed + failed, len(rows))
+
+    if workers <= 1:
+        for row in todo:
+            record(row, _extract_or_error(row["path"]))
+    else:
+        import multiprocessing
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+
+        # spawn, not fork: analysis libraries hold native threads and state
+        # that do not survive a fork safely.
+        ctx = multiprocessing.get_context("spawn")
+        with ProcessPoolExecutor(max_workers=workers, mp_context=ctx) as pool:
+            futures = {pool.submit(_extract_or_error, r["path"]): r
+                       for r in todo}
+            for fut in as_completed(futures):
+                record(futures[fut], fut.result())
 
     return {"analyzed": analyzed, "failed": failed, "cached": already}
 

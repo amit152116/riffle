@@ -271,3 +271,95 @@ def test_cli_shuffle_seed_not_found_reports_cleanly(tmp_path):
     assert result.exit_code == 1
     assert "Traceback" not in result.output
     assert "no track" in result.output.lower() or "not found" in result.output.lower()
+
+
+# --- embedding index: playlists follow style, rules re-rank the pool --------
+
+def _emb_lib(conn, specs):
+    """specs: [(bpm, key, artist)] or [(None, None, artist)] for no features."""
+    from riffle import similarity
+    for i, (bpm, key, artist) in enumerate(specs, start=1):
+        conn.execute("INSERT INTO audio_content (id, audio_hash, hash_method, duration) "
+                     "VALUES (?, ?, 'streamhash', 200.0)", (i, f"h{i}"))
+        conn.execute("INSERT INTO track (id, path, size, mtime, audio_content_id, "
+                     "tag_artist, tag_title, present) VALUES (?, ?, 1, 1.0, ?, ?, ?, 1)",
+                     (i, f"/m/{i}.mp3", i, artist, f"T{i}"))
+        if bpm is not None:
+            conn.execute(
+                "INSERT INTO audio_features (audio_content_id, bpm, bpm_confidence, "
+                "key_name, scale, key_strength, loudness_lufs, danceability, energy, "
+                "spectral_centroid, onset_rate, dynamic_complexity, dissonance, zcr, "
+                "mfcc_mean, extractor_version, config_hash, analyzed_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (i, bpm, 0.9, key, "major", 0.8, -14.0, 1.0, 0.3, 2000.0, 3.0, 5.0,
+                 0.3, 0.05, store.pack_mfcc(np.zeros(13)), "v", "h", "2026-01-01"))
+    return similarity.embedding_config_hash()
+
+
+def _link(conn, config_hash, track, neighbour, dist):
+    conn.execute("INSERT INTO track_similarity (track_id, neighbor_id, mfcc_norm, "
+                 "combined_score, config_hash) VALUES (?,?,?,?,?)",
+                 (track, neighbour, dist, dist, config_hash))
+
+
+def test_find_similar_keeps_neighbours_that_have_no_features(tmp_path):
+    from riffle import shuffle
+    conn = store.connect(tmp_path / "db.sqlite")
+    h = _emb_lib(conn, [(120.0, "C", "A"), (None, None, "B")])
+    _link(conn, h, 1, 2, 0.1)
+    rows = shuffle.find_similar(conn, 1, n=5)
+    assert [r["neighbor_id"] for r in rows] == [2]
+    assert rows[0]["bpm"] is None
+
+
+def test_smart_shuffle_can_play_tracks_without_features(tmp_path):
+    from riffle import shuffle
+    conn = store.connect(tmp_path / "db.sqlite")
+    h = _emb_lib(conn, [(120.0, "C", "A"), (None, None, "B")])
+    _link(conn, h, 1, 2, 0.1)
+    playlist = shuffle.smart_shuffle(conn, seed_track_id=1, n=2)
+    assert [t["track_id"] for t in playlist] == [1, 2]
+
+
+def test_embedding_shuffle_prefers_a_compatible_key_among_close_neighbours(tmp_path):
+    from riffle import shuffle
+    conn = store.connect(tmp_path / "db.sqlite")
+    h = _emb_lib(conn, [(120.0, "C", "A"), (120.0, "F#", "B"), (120.0, "C", "C")])
+    _link(conn, h, 1, 2, 0.10)   # marginally closer, but a tritone away
+    _link(conn, h, 1, 3, 0.12)
+    playlist = shuffle.smart_shuffle(conn, seed_track_id=1, n=2)
+    assert playlist[1]["track_id"] == 3
+
+
+def test_embedding_shuffle_treats_half_and_double_tempo_as_the_same(tmp_path):
+    from riffle import shuffle
+    conn = store.connect(tmp_path / "db.sqlite")
+    h = _emb_lib(conn, [(70.0, "C", "A"), (100.0, "C", "B"), (140.0, "C", "C")])
+    _link(conn, h, 1, 2, 0.10)   # 30 BPM away
+    _link(conn, h, 1, 3, 0.11)   # exactly double time
+    playlist = shuffle.smart_shuffle(conn, seed_track_id=1, n=2)
+    assert playlist[1]["track_id"] == 3
+
+
+def test_embedding_shuffle_looks_past_the_first_sixty_neighbours(tmp_path):
+    # The compatible track is the 61st nearest: the old pool of 40 never sees it.
+    from riffle import shuffle
+    specs = [(120.0, "C", "A")] + [(120.0, "F#", f"X{i}") for i in range(2, 62)]
+    specs.append((120.0, "C", "GOOD"))
+    conn = store.connect(tmp_path / "db.sqlite")
+    h = _emb_lib(conn, specs)
+    for i in range(2, 63):
+        _link(conn, h, 1, i, 0.10 + i * 0.0005)
+    playlist = shuffle.smart_shuffle(conn, seed_track_id=1, n=2)
+    assert playlist[1]["track_id"] == 62
+
+
+def test_legacy_index_keeps_the_old_rules(tmp_path):
+    # An index built by the MFCC method (no embedding hash) is untouched.
+    from riffle import shuffle
+    conn = store.connect(tmp_path / "db.sqlite")
+    _emb_lib(conn, [(70.0, "C", "A"), (100.0, "C", "B"), (140.0, "C", "C")])
+    _link(conn, "legacy", 1, 2, 0.10)
+    _link(conn, "legacy", 1, 3, 0.11)
+    playlist = shuffle.smart_shuffle(conn, seed_track_id=1, n=2)
+    assert playlist[1]["track_id"] == 2   # no octave logic, so nearest wins

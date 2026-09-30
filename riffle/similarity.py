@@ -275,3 +275,135 @@ def full_rebuild(conn, top_k: int = 20) -> dict:
         raise
     conn.execute("COMMIT")
     return result
+
+
+# --- Embedding-based index --------------------------------------------------
+#
+# Benchmarked on 416 real tracks against the MFCC-based score above. The
+# Discogs-EffNet embedding found a known duplicate at rank 1 for 99% of
+# tracks (MFCC score: 85%) and put same-style tracks in 81% of the top 10
+# (MFCC score: 56%, chance 50%). Blending tempo/key/energy into the embedding
+# distance made it worse, so those stay out of the similarity score and are
+# used as transition rules when building a playlist.
+
+EMBEDDING_MODEL = "discogs-effnet-bs64-1"
+
+
+def embedding_config_hash() -> str:
+    blob = json.dumps({"method": "embedding", "model": EMBEDDING_MODEL,
+                       "distance": "cosine",
+                       "correction": "mutual-proximity-gaussian"},
+                      sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(blob.encode()).hexdigest()
+
+
+def cosine_distance_matrix(X: np.ndarray) -> np.ndarray:
+    X = np.asarray(X, dtype=np.float64)
+    X = X / (np.linalg.norm(X, axis=1, keepdims=True) + 1e-12)
+    D = np.clip(1.0 - X @ X.T, 0.0, 2.0)
+    D = (D + D.T) / 2.0
+    np.fill_diagonal(D, 0.0)
+    return D
+
+
+def mutual_proximity(D: np.ndarray) -> np.ndarray:
+    """Gaussian mutual proximity (Schnitzer et al., JMLR 2012).
+
+    In high dimensions some tracks ("hubs") sit among the nearest neighbours
+    of a large share of the library while others ("anti-hubs") appear in
+    nobody's list, so a shuffle over raw distances keeps returning the same
+    tracks and never reaches others. Mutual proximity re-expresses each
+    distance as the chance that BOTH tracks see the other as unusually
+    close, judged against each one's own distance distribution. Returned as
+    a distance in [0, 1].
+    """
+    from scipy.special import ndtr
+
+    n = len(D)
+    if n < 3:
+        return D / max(float(D.max()), 1e-12)
+    off = ~np.eye(n, dtype=bool)
+    mu = (D * off).sum(axis=1) / (n - 1)
+    sd = np.sqrt((((D - mu[:, None]) ** 2) * off).sum(axis=1) / (n - 1)) + 1e-12
+    p_farther = 1.0 - ndtr((D - mu[:, None]) / sd[:, None])   # P(X_i > d_ij)
+    out = np.clip(1.0 - p_farther * p_farther.T, 0.0, 1.0)
+    np.fill_diagonal(out, 0.0)
+    return out
+
+
+def load_embeddings(conn) -> tuple[list[int], np.ndarray]:
+    rows = conn.execute(
+        "SELECT t.id AS track_id, e.dim AS dim, e.vector AS vector "
+        "FROM track t JOIN audio_embedding e "
+        "  ON e.audio_content_id = t.audio_content_id AND e.model = ? "
+        "WHERE t.present = 1 ORDER BY t.id", (EMBEDDING_MODEL,)).fetchall()
+    ids = [r["track_id"] for r in rows]
+    if not rows:
+        return ids, np.zeros((0, 0))
+    return ids, np.stack([np.frombuffer(r["vector"], dtype="<f4") for r in rows])
+
+
+EMBEDDING_TOP_K = 100   # shuffle re-ranks a pool of ~80 neighbours
+
+
+def build_embedding_similarity(conn, top_k: int = EMBEDDING_TOP_K) -> dict:
+    """(Re)build every track's top-k neighbours from the embeddings.
+
+    Always a full rebuild: mutual proximity depends on the whole library, so
+    adding one track can change other tracks' distances. It is cheap (a
+    matrix over the library) and replaces any index built another way.
+    """
+    ids, X = load_embeddings(conn)
+    if not ids:
+        raise ValueError("No embeddings found: run `riffle embed` first")
+    raw = cosine_distance_matrix(X)
+    D = mutual_proximity(raw)
+    k = min(top_k, len(ids) - 1)
+    config_hash = embedding_config_hash()
+
+    rows = []
+    for i, track_id in enumerate(ids):
+        order = np.argsort(D[i], kind="stable")
+        order = order[order != i][:k]
+        for j in order:
+            # mfcc_norm is NOT NULL and holds the primary audio distance
+            # (here the raw cosine distance); the other components are unused.
+            rows.append((track_id, ids[j], float(raw[i, j] / 2.0), None, None,
+                         None, float(D[i, j]), config_hash))
+
+    conn.execute("BEGIN")
+    try:
+        conn.execute("DELETE FROM track_similarity")
+        conn.executemany(
+            "INSERT INTO track_similarity (track_id, neighbor_id, mfcc_norm, "
+            "bpm_norm, key_norm, energy_norm, combined_score, config_hash) "
+            "VALUES (?,?,?,?,?,?,?,?)", rows)
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    conn.execute("COMMIT")
+    return {"tracks": len(ids), "pairs_stored": len(rows)}
+
+
+def build_index(conn, method: str = "auto", top_k: int | None = None,
+                rebuild: bool = False) -> dict:
+    """Build the neighbour index with the embedding or the legacy MFCC score.
+
+    "auto" uses embeddings when any exist, else the MFCC-based score.
+    """
+    has_embeddings = conn.execute(
+        "SELECT count(*) c FROM audio_embedding WHERE model = ?",
+        (EMBEDDING_MODEL,)).fetchone()["c"] > 0
+    if method == "auto":
+        method = "embedding" if has_embeddings else "mfcc"
+    if method == "embedding":
+        if not has_embeddings:
+            raise ValueError("No embeddings found: run `riffle embed` first")
+        result = build_embedding_similarity(conn, top_k or EMBEDDING_TOP_K)
+    elif method == "mfcc":
+        k = top_k or 20
+        result = full_rebuild(conn, k) if rebuild else build_similarity(conn, k)
+    else:
+        raise ValueError(f"unknown method {method!r} (auto, embedding, mfcc)")
+    result["method"] = method
+    return result

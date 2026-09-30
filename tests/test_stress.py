@@ -42,10 +42,14 @@ def test_match_run_stays_within_time_and_memory(tmp_path):
     scan.scan(conn, [lib])
     fingerprint.fingerprint_pending(conn)
 
+    # ru_maxrss is the process's high-water mark, so measure what this run
+    # adds: other tests in the same process (for example ones that load a
+    # TensorFlow model) raise the baseline without being this run's fault.
+    baseline_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
     start = time.monotonic()
     matchrun.run_match(conn)
     elapsed = time.monotonic() - start
     peak_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
     assert elapsed < 60.0
-    assert peak_mb < 1024
+    assert peak_mb - baseline_mb < 1024

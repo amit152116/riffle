@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 
 class LockError(Exception):
@@ -460,8 +460,19 @@ CREATE TABLE audio_bandwidth (
 );
 """
 
+_MIGRATION_9 = """
+CREATE TABLE audio_embedding (
+    audio_content_id INTEGER NOT NULL REFERENCES audio_content(id),
+    model            TEXT NOT NULL,
+    dim              INTEGER NOT NULL,
+    vector           BLOB NOT NULL,
+    computed_at      TEXT NOT NULL,
+    PRIMARY KEY (audio_content_id, model)
+);
+"""
+
 _MIGRATIONS = [_MIGRATION_1, _MIGRATION_2, _MIGRATION_3, _MIGRATION_4, _MIGRATION_5,
-               _MIGRATION_6, _migration_7, _MIGRATION_8]
+               _MIGRATION_6, _migration_7, _MIGRATION_8, _MIGRATION_9]
 
 
 def connect(db_path: Path) -> sqlite3.Connection:

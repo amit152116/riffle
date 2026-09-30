@@ -182,6 +182,35 @@ def bandwidth(limit: int | None = typer.Option(None, help="Max files to measure"
 
 
 @app.command()
+def embed(as_json: bool = False,
+          limit: int | None = typer.Option(None, help="Max tracks to embed"),
+          workers: int = typer.Option(2, help="Tracks embedded in parallel"),
+          model_dir: str | None = typer.Option(
+              None, help="Folder holding discogs-effnet-bs64-1.pb "
+                         "(default $RIFFLE_MODEL_DIR or ~/riffle-models)")):
+    """Compute audio embeddings, the basis of similarity search."""
+    from riffle import embeddings as embeddings_mod
+
+    def progress(done: int, total: int) -> None:
+        if not as_json and done % 50 == 0:
+            typer.echo(f"  {done}/{total}", err=True)
+
+    with _session() as conn:
+        try:
+            result = embeddings_mod.embedding_scan(
+                conn, limit=limit, workers=workers, model_dir=model_dir,
+                on_progress=progress)
+        except (ImportError, FileNotFoundError) as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(code=1)
+    if as_json:
+        typer.echo(json.dumps(result))
+    else:
+        typer.echo(f"embedded {result['embedded']}, cached {result['cached']}, "
+                   f"failed {result['failed']}")
+
+
+@app.command()
 def quality(as_json: bool = False,
             limit: int | None = typer.Option(None, help="Max tracks to analyze")):
     from riffle import quality as quality_mod
@@ -197,12 +226,20 @@ def quality(as_json: bool = False,
 
 @app.command()
 def features(as_json: bool = False,
-             limit: int | None = typer.Option(None, help="Max tracks to analyze")):
+             limit: int | None = typer.Option(None, help="Max tracks to analyze"),
+             workers: int = typer.Option(
+                 1, help="Tracks analysed in parallel (each needs ~0.5 GB)")):
     from riffle import features as features_mod
+
+    def progress(done: int, total: int) -> None:
+        if not as_json and done % 50 == 0:
+            typer.echo(f"  {done}/{total}", err=True)
 
     with _session() as conn:
         try:
-            result = features_mod.feature_scan(conn, limit=limit)
+            result = features_mod.feature_scan(conn, limit=limit,
+                                               workers=workers,
+                                               on_progress=progress)
         except ImportError as exc:
             typer.echo(f"error: {exc}", err=True)
             raise typer.Exit(code=1)
@@ -283,19 +320,32 @@ def cluster(n: int | None = typer.Option(None, help="Number of clusters"),
 
 
 @app.command(name="build-index")
-def build_index(top_k: int = 20, rebuild: bool = False, as_json: bool = False):
+def build_index(top_k: int | None = typer.Option(
+                    None, help="Neighbours kept per track (default 100 for "
+                               "embeddings, 20 for mfcc)"),
+                rebuild: bool = False, as_json: bool = False,
+                method: str = typer.Option(
+                    "auto", help="auto, embedding or mfcc; auto uses "
+                                 "embeddings when `riffle embed` has run")):
     from riffle import similarity
 
     with _session() as conn:
-        if rebuild:
-            result = similarity.full_rebuild(conn, top_k)
-        else:
-            result = similarity.build_similarity(conn, top_k)
+        try:
+            result = similarity.build_index(conn, method=method, top_k=top_k,
+                                            rebuild=rebuild)
+        except ValueError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(code=1)
         if as_json:
             typer.echo(json.dumps(result))
             return
-        typer.echo(f"new {result['new_tracks']}, pairs {result['pairs_stored']}, "
-                   f"updated {result['existing_updated']}")
+        if result["method"] == "embedding":
+            typer.echo(f"embedding index: {result['tracks']} tracks, "
+                       f"pairs {result['pairs_stored']}")
+        else:
+            typer.echo(f"mfcc index: new {result['new_tracks']}, "
+                       f"pairs {result['pairs_stored']}, "
+                       f"updated {result['existing_updated']}")
 
 
 @app.command()
