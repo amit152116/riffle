@@ -117,3 +117,87 @@ def render_text(data: dict) -> str:
     for w in data["warnings"]:
         lines.append(f"warning: {w}")
     return "\n".join(lines)
+
+
+PROBABLE_MIN_COVERAGE = 0.6
+PROBABLE_MAX_BIT_ERROR = 4.0
+PROBABLE_MIN_SPAN_SECONDS = 90.0
+
+
+def _content_paths(conn, content_id: int) -> tuple[list[str], bool]:
+    """Every file with this audio, at its quarantine path if it was moved."""
+    paths: list[str] = []
+    quarantined = False
+    for r in conn.execute(
+        "SELECT t.path AS path, "
+        "       (SELECT q.dst_path FROM quarantine_log q "
+        "        WHERE q.track_id = t.id AND q.state = 'moved' "
+        "        ORDER BY q.id DESC LIMIT 1) AS quarantine_path "
+        "FROM track t WHERE t.audio_content_id = ? ORDER BY t.id",
+        (content_id,),
+    ):
+        if r["quarantine_path"]:
+            paths.append(r["quarantine_path"])
+            quarantined = True
+        else:
+            paths.append(r["path"])
+    return paths, quarantined
+
+
+def probable_pairs(conn, run_id: int,
+                   min_coverage: float = PROBABLE_MIN_COVERAGE,
+                   max_bit_error: float = PROBABLE_MAX_BIT_ERROR,
+                   min_span_seconds: float = PROBABLE_MIN_SPAN_SECONDS,
+                   ) -> list[dict]:
+    """Tier-2 pairs that look like one recording with extra intro/outro.
+
+    Tier 1 needs 85% coverage on both files, so a copy carrying a long intro
+    or outro falls just short. Requiring both files to be substantially
+    covered (not just one) excludes a song inside a long compilation, where
+    the song covers most of itself but a sliver of the other file.
+
+    Review only: nothing here forms a group or authorizes quarantine.
+    """
+    rows = conn.execute(
+        "SELECT * FROM pair WHERE run_id = ? AND tier = 2 "
+        "AND min(coverage_a, coverage_b) >= ? "
+        "AND mean_bit_error <= ? AND matched_span_seconds >= ? "
+        "ORDER BY min(coverage_a, coverage_b) DESC, a_content_id, b_content_id",
+        (run_id, min_coverage, max_bit_error, min_span_seconds),
+    ).fetchall()
+    out = []
+    for p in rows:
+        a_paths, a_quarantined = _content_paths(conn, p["a_content_id"])
+        b_paths, b_quarantined = _content_paths(conn, p["b_content_id"])
+        out.append({
+            "a_content_id": p["a_content_id"],
+            "b_content_id": p["b_content_id"],
+            "coverage_a": p["coverage_a"],
+            "coverage_b": p["coverage_b"],
+            "mean_bit_error": p["mean_bit_error"],
+            "matched_span_seconds": p["matched_span_seconds"],
+            "a_paths": a_paths, "a_quarantined": a_quarantined,
+            "b_paths": b_paths, "b_quarantined": b_quarantined,
+        })
+    return out
+
+
+def render_probable(rows: list[dict]) -> str:
+    if not rows:
+        return "No probable duplicates."
+    lines = ["Probable duplicates (review only: nothing here is approved "
+             "or applied)", ""]
+    for r in rows:
+        lines.append(
+            f"{r['a_content_id']}~{r['b_content_id']} "
+            f"cov {r['coverage_a']:.2f}/{r['coverage_b']:.2f} "
+            f"err {r['mean_bit_error']:.2f} "
+            f"span {r['matched_span_seconds']:.1f}s")
+        for label, paths, quarantined in (
+                ("A", r["a_paths"], r["a_quarantined"]),
+                ("B", r["b_paths"], r["b_quarantined"])):
+            note = " [quarantined]" if quarantined else ""
+            for path in paths:
+                lines.append(f"  {label} {_escape(path)}{note}")
+        lines.append("")
+    return "\n".join(lines)

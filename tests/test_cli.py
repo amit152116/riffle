@@ -60,3 +60,30 @@ def test_concurrent_invocation_is_refused(tmp_path):
     with store.exclusive_lock(db):
         result = runner.invoke(app, ["--db", str(db), "match"])
     assert result.exit_code != 0
+
+
+def test_bandwidth_command_measures_present_tracks(tmp_path):
+    lib = tmp_path / "lib"
+    make_tone(lib / "a.flac", seconds=20.0)
+    db = str(tmp_path / "db.sqlite")
+    assert runner.invoke(app, ["--db", db, "scan", str(lib)]).exit_code == 0
+
+    first = runner.invoke(app, ["--db", db, "bandwidth"])
+    assert first.exit_code == 0
+    assert "measured 1" in first.stdout
+
+    again = runner.invoke(app, ["--db", db, "bandwidth"])
+    assert again.exit_code == 0
+    assert "measured 0" in again.stdout
+    assert "cached 1" in again.stdout
+
+
+def test_bandwidth_remeasure_flag_remeasures_cached_files(tmp_path):
+    lib = tmp_path / "lib"
+    make_tone(lib / "a.flac", seconds=20.0)
+    db = str(tmp_path / "db.sqlite")
+    runner.invoke(app, ["--db", db, "scan", str(lib)])
+    runner.invoke(app, ["--db", db, "bandwidth"])
+    again = runner.invoke(app, ["--db", db, "bandwidth", "--remeasure"])
+    assert again.exit_code == 0
+    assert "measured 1" in again.stdout

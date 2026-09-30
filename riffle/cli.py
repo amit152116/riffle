@@ -72,6 +72,26 @@ def report(run: int = typer.Option(..., "--run"),
 
 
 @app.command()
+def probable(run: int = typer.Option(..., "--run"), as_json: bool = False,
+             min_coverage: float = typer.Option(
+                 report_mod.PROBABLE_MIN_COVERAGE,
+                 help="Both files must be covered at least this much (0-1)"),
+             max_bit_error: float = typer.Option(
+                 report_mod.PROBABLE_MAX_BIT_ERROR,
+                 help="Highest mean bit error in the matched span"),
+             min_span: float = typer.Option(
+                 report_mod.PROBABLE_MIN_SPAN_SECONDS,
+                 help="Shortest matched span, in seconds")):
+    """List tier-2 pairs that look like one recording (review only)."""
+    with _session() as conn:
+        rows = report_mod.probable_pairs(
+            conn, run, min_coverage=min_coverage,
+            max_bit_error=max_bit_error, min_span_seconds=min_span)
+    typer.echo(json.dumps(rows, indent=2) if as_json
+               else report_mod.render_probable(rows))
+
+
+@app.command()
 def approve(run: int = typer.Option(..., "--run"),
             group_id: int | None = typer.Option(None, "--group"),
             tier: int | None = None, all: bool = False, yes: bool = False):
@@ -143,6 +163,22 @@ def health(as_json: bool = False):
         data = health_mod.health_report(conn)
     typer.echo(json.dumps(data, indent=2) if as_json
                else health_mod.render_health(data))
+
+
+@app.command()
+def bandwidth(limit: int | None = typer.Option(None, help="Max files to measure"),
+              remeasure: bool = typer.Option(
+                  False, help="Measure every present file again"),
+              workers: int = typer.Option(4, help="Files measured in parallel")):
+    """Measure each file's real low-pass cutoff, used to rank duplicates."""
+    from riffle import bandwidth as bandwidth_mod
+
+    with _session() as conn:
+        result = bandwidth_mod.bandwidth_scan(conn, limit=limit,
+                                              remeasure=remeasure,
+                                              workers=workers)
+    typer.echo(f"measured {result['measured']}, cached {result['cached']}, "
+               f"unmeasurable {result['unmeasurable']}")
 
 
 @app.command()

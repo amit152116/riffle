@@ -168,7 +168,22 @@ def test_migration_7_bumps_schema_version(tmp_path):
     conn = store.connect(tmp_path / "db.sqlite")
     assert conn.execute(
         "SELECT version FROM schema_version"
-    ).fetchone()["version"] == 7
+    ).fetchone()["version"] >= 7
+
+
+def test_migration_8_adds_audio_bandwidth(tmp_path):
+    conn = store.connect(tmp_path / "db.sqlite")
+    assert conn.execute(
+        "SELECT version FROM schema_version"
+    ).fetchone()["version"] == store.SCHEMA_VERSION >= 8
+    cols = {r["name"]: r for r in conn.execute(
+        "PRAGMA table_info(audio_bandwidth)")}
+    assert set(cols) == {"audio_content_id", "cutoff_hz", "cliff_db",
+                         "measured_at"}
+    # NULL cutoff means "measured, no cliff" and is distinct from an absent
+    # row, which means "not measured yet".
+    assert not cols["cutoff_hz"]["notnull"]
+    assert cols["measured_at"]["notnull"]
 
 
 def test_migration_7_rolls_back_atomically_on_failure(tmp_path, monkeypatch):

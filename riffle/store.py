@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 class LockError(Exception):
@@ -451,8 +451,17 @@ def _migration_7(conn: sqlite3.Connection) -> None:
         conn.execute("PRAGMA foreign_keys=ON")
 
 
+_MIGRATION_8 = """
+CREATE TABLE audio_bandwidth (
+    audio_content_id INTEGER PRIMARY KEY REFERENCES audio_content(id),
+    cutoff_hz        REAL,
+    cliff_db         REAL,
+    measured_at      TEXT NOT NULL
+);
+"""
+
 _MIGRATIONS = [_MIGRATION_1, _MIGRATION_2, _MIGRATION_3, _MIGRATION_4, _MIGRATION_5,
-               _MIGRATION_6, _migration_7]
+               _MIGRATION_6, _migration_7, _MIGRATION_8]
 
 
 def connect(db_path: Path) -> sqlite3.Connection:
